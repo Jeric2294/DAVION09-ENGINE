@@ -1,0 +1,326 @@
+#!/system/bin/sh
+# =============================================================================
+#  HEADSET DAEMON — MT6893 / TECNO CK8n Android 14
+#  Primary detection: /sys/class/switch/h2w/state
+#  Real-time trigger: logcat ACTION_HEADSET_PLUG broadcast
+#
+#  v2 — Per-app headset volume
+#    • Per-app vol: $RR_DIR/<pkg>.hvol_on + $RR_DIR/<pkg>.hvol
+#    • Per-app takes PRIORITY over global headset_vol_on_connect setting
+#    • Falls back to global config if no per-app setting exists (backward-compat)
+#    • Tracks foreground app switch while headset is plugged — re-applies vol
+#    • Watches /dev/.davion_headset_retrigger for instant re-apply when
+#      user saves a per-app config from the WebUI while headset is connected
+# =============================================================================
+
+CFG_DIR="/sdcard/GovThermal/config"
+LOG="/sdcard/GovThermal/GovThermal.log"
+
+# Per-app headset vol files live alongside all other per-app data
+RR_DIR="/sdcard/DAVION_ENGINE/refresh_locks"
+
+HEADSET_VOL_ON_FILE="$CFG_DIR/headset_vol_on_connect"   # global enable flag
+HEADSET_VOL_FILE="$CFG_DIR/headset_vol_value"            # global volume value
+HEADSET_MUTE_FILE="$CFG_DIR/headset_mute_on_disconnect"
+UNIVERSAL_VOL_FILE="/sdcard/DAVION_ENGINE/universal_vol.txt"
+
+# Runtime flags (in tmpfs — cleared on reboot automatically)
+HEADSET_PLUGGED_FLAG="/dev/.davion_headset_plugged"
+HEADSET_RETRIGGER="/dev/.davion_headset_retrigger"
+LAST_FG_PKG_FILE="/dev/.davion_last_fg_pkg"              # written by encore_app_daemon too
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [HEADSET] $1" >> "$LOG"; }
+
+renice -n -5 -p $$ 2>/dev/null
+[ -f /proc/$$/oom_score_adj ] && echo -900 > /proc/$$/oom_score_adj 2>/dev/null
+
+# ── Read headset state from sysfs ─────────────────────────────────────────
+read_h2w_state() {
+    local st
+    st=$(cat /sys/class/switch/h2w/state 2>/dev/null | tr -d '[:space:]')
+    [ -n "$st" ] && echo "$st" && return
+    st=$(cat /sys/devices/virtual/switch/h2w/state 2>/dev/null | tr -d '[:space:]')
+    [ -n "$st" ] && echo "$st" && return
+    echo "0"
+}
+
+read_kernel_headset() {
+    cat /sys/kernel/headset/state 2>/dev/null | tr -d '[:space:]'
+}
+
+is_headset_connected() {
+    local st
+    # Method 1: h2w
+    st=$(read_h2w_state)
+    [ "$st" != "0" ] && [ -n "$st" ] && return 0
+    # Method 2: /sys/kernel/headset/state
+    st=$(read_kernel_headset)
+    [ "$st" != "0" ] && [ -n "$st" ] && return 0
+    # Method 3: extcon — headphone/mic/headset ONLY (not USB-HOST — that is OTG)
+    for i in 0 1 2 3 4 5; do
+        [ -f "/sys/class/extcon/extcon$i/state" ] || continue
+        cat "/sys/class/extcon/extcon$i/state" 2>/dev/null | grep -qiE "HEADPHONE=1|MICROPHONE=1|HEADSET=1" && return 0
+    done
+    # Method 4: named extcon — headset/headphone only
+    for n in usb-otg mtk-usb mtk-otg mtk-vbus mtk-id typec; do
+        [ -f "/sys/class/extcon/$n/state" ] || continue
+        cat "/sys/class/extcon/$n/state" 2>/dev/null | grep -qiE "HEADPHONE=1|MICROPHONE=1|HEADSET=1" && return 0
+    done
+    # Method 5: dumpsys audio (most reliable fallback for Android 14)
+    dumpsys audio 2>/dev/null | grep -A 20 "Audio Routes:" | grep -qiE "Wired Headset: true|Wired Headphones: true" && return 0
+    dumpsys audio 2>/dev/null | grep -i "devices:" | grep -qiE "headset|headphone" && return 0
+    return 1
+}
+
+is_otg_connected() {
+    for i in 0 1 2 3 4 5; do
+        [ -f "/sys/class/extcon/extcon$i/state" ] || continue
+        cat "/sys/class/extcon/extcon$i/state" 2>/dev/null | grep -qiE "USB-HOST=1|ID=1" && return 0
+    done
+    for n in usb-otg mtk-usb mtk-otg mtk-id typec; do
+        [ -f "/sys/class/extcon/$n/state" ] || continue
+        cat "/sys/class/extcon/$n/state" 2>/dev/null | grep -qiE "USB-HOST=1|ID=1" && return 0
+    done
+    cat /sys/kernel/debug/usb/dr_mode 2>/dev/null | grep -qi host && return 0
+    cat /sys/class/usb_role/*/role 2>/dev/null | grep -qi host && return 0
+    dumpsys usb 2>/dev/null | grep -qiE "usbHost.*true|hostConnected.*true" && return 0
+    return 1
+}
+
+enable_otg() {
+    settings put global usb_otg_enabled 1 2>/dev/null
+    settings put system  otg_connect    1 2>/dev/null
+    settings put global  otg_enable     1 2>/dev/null
+    settings put secure  usb_otg_enabled 1 2>/dev/null
+    setprop vendor.usb.otg_mode         1 2>/dev/null
+    setprop sys.usb.otg_enable          1 2>/dev/null
+    setprop persist.vendor.usb.otg      1 2>/dev/null
+    for f in /sys/class/usb_role/*/role; do echo host > "$f" 2>/dev/null; done
+    echo host > /sys/kernel/debug/usb/dr_mode 2>/dev/null || true
+    log_msg "OTG enabled (no-dialog sysfs path)"
+}
+
+disable_otg() {
+    settings put global usb_otg_enabled 0 2>/dev/null
+    setprop vendor.usb.otg_mode 0 2>/dev/null
+    setprop sys.usb.otg_enable 0 2>/dev/null
+    settings put secure usb_otg_enabled 0 2>/dev/null
+    echo device > /sys/class/usb_role/*/role 2>/dev/null || true
+    echo peripheral > /sys/kernel/debug/usb/dr_mode 2>/dev/null || true
+    log_msg "OTG disabled (device mode restored)"
+}
+
+set_vol() {
+    local v="$1"
+    cmd media_session volume --stream 3 --set "$v" >/dev/null 2>&1 || \
+    media volume --stream 3 --set "$v" >/dev/null 2>&1
+}
+
+# ── Get foreground package ──────────────────────────────────────────────────
+# Tries the shared flag file first (written by encore_app_daemon, near-zero cost),
+# falls back to dumpsys only when the file is stale or absent.
+get_foreground_pkg() {
+    # Check shared file first (written by encore_app_daemon every loop)
+    local pkg
+    pkg=$(cat "$LAST_FG_PKG_FILE" 2>/dev/null | tr -d '[:space:]')
+    [ -n "$pkg" ] && echo "$pkg" && return
+
+    # Fallback: dumpsys activity
+    pkg=$(dumpsys activity top 2>/dev/null \
+        | grep -m1 "ACTIVITY" \
+        | grep -oE "[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+" \
+        | head -1)
+    [ -n "$pkg" ] && echo "$pkg" && return
+
+    # Fallback 2: window focus
+    pkg=$(dumpsys window windows 2>/dev/null \
+        | grep -E "mCurrentFocus|mFocusedApp" \
+        | grep -oE "[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+" \
+        | head -1)
+    echo "$pkg"
+}
+
+# ── Apply volume for a specific package ───────────────────────────────────
+# Priority: per-app config > global config > do nothing
+# Returns 0 if volume was applied, 1 if nothing applied.
+apply_vol_for_pkg() {
+    local pkg="$1"
+
+    # ── Per-app path ──────────────────────────────────────────
+    if [ -n "$pkg" ] && [ -f "$RR_DIR/${pkg}.hvol_on" ]; then
+        local pvol
+        pvol=$(cat "$RR_DIR/${pkg}.hvol" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$pvol" ] && [ "$pvol" -ge 0 ] 2>/dev/null && [ "$pvol" -le 15 ] 2>/dev/null; then
+            set_vol "$pvol"
+            log_msg "per-app vol → $pvol ($pkg)"
+            return 0
+        fi
+    fi
+
+    # ── Global fallback (original behavior — fully backward-compatible) ───
+    if [ -f "$HEADSET_VOL_ON_FILE" ] && [ -f "$HEADSET_VOL_FILE" ]; then
+        local gvol
+        gvol=$(cat "$HEADSET_VOL_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$gvol" ] && [ "$gvol" -ge 0 ] 2>/dev/null && [ "$gvol" -le 15 ] 2>/dev/null; then
+            set_vol "$gvol"
+            log_msg "global vol → $gvol (fallback, pkg=${pkg:-unknown})"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# ── Headset connected ──────────────────────────────────────────────────────
+on_connect() {
+    log_msg "CONNECTED (state=$(read_h2w_state))"
+
+    # Mark headset as plugged (read by WebUI save to decide if retrigger is needed)
+    touch "$HEADSET_PLUGGED_FLAG" 2>/dev/null
+
+    # Get foreground app and apply its vol config
+    _last_hvol_pkg=$(get_foreground_pkg)
+    apply_vol_for_pkg "$_last_hvol_pkg"
+}
+
+# ── Headset disconnected ───────────────────────────────────────────────────
+on_disconnect() {
+    log_msg "DISCONNECTED"
+
+    # Clear flags
+    rm -f "$HEADSET_PLUGGED_FLAG" "$HEADSET_RETRIGGER" 2>/dev/null
+    _last_hvol_pkg=""
+
+    # Mute first if global mute-on-disconnect is enabled
+    if [ -f "$HEADSET_MUTE_FILE" ]; then
+        set_vol 0
+        log_msg "muted on disconnect"
+    fi
+
+    # Restore to universal volume lock (unconditional — original behavior)
+    if [ -f "$UNIVERSAL_VOL_FILE" ]; then
+        local uvol
+        uvol=$(cat "$UNIVERSAL_VOL_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$uvol" ] && [ "$uvol" -ge 0 ] 2>/dev/null && [ "$uvol" -le 15 ] 2>/dev/null; then
+            set_vol "$uvol"
+            log_msg "restored universal vol → $uvol"
+        fi
+    fi
+}
+
+# ── Handle app switch while headset is plugged ────────────────────────────
+# Called from the polling loop. Only acts if the foreground pkg has changed.
+check_app_switch() {
+    [ "$_state" = "on" ] || return   # only when headset is connected
+
+    local cur_pkg
+    cur_pkg=$(get_foreground_pkg)
+    [ -z "$cur_pkg" ] && return
+    [ "$cur_pkg" = "$_last_hvol_pkg" ] && return   # same app, nothing to do
+
+    log_msg "app switch while plugged: $_last_hvol_pkg → $cur_pkg"
+    _last_hvol_pkg="$cur_pkg"
+    apply_vol_for_pkg "$cur_pkg"
+}
+
+# ── Handle retrigger from WebUI save ─────────────────────────────────────
+# script.js writes the pkg name into HEADSET_RETRIGGER when user saves a
+# per-app headset vol config while the headset is plugged in.
+check_retrigger() {
+    [ -f "$HEADSET_RETRIGGER" ] || return
+    local retrig_pkg
+    retrig_pkg=$(cat "$HEADSET_RETRIGGER" 2>/dev/null | tr -d '[:space:]')
+    rm -f "$HEADSET_RETRIGGER" 2>/dev/null
+
+    [ -z "$retrig_pkg" ] && return
+    [ "$_state" = "on" ]  || return   # headset must still be plugged
+
+    # Only re-apply if the retriggered pkg is currently foreground
+    local cur_pkg
+    cur_pkg=$(get_foreground_pkg)
+    if [ "$retrig_pkg" = "$cur_pkg" ]; then
+        log_msg "retrigger: re-applying vol for $retrig_pkg"
+        _last_hvol_pkg="$cur_pkg"
+        apply_vol_for_pkg "$cur_pkg"
+    fi
+}
+
+# ── Cleanup ───────────────────────────────────────────────────────────────
+cleanup() {
+    log_msg "stopped"
+    rm -f "$HEADSET_PLUGGED_FLAG" "$HEADSET_RETRIGGER" 2>/dev/null
+    kill $LOGCAT_PID 2>/dev/null
+    exit 0
+}
+trap cleanup INT TERM EXIT
+
+# ── Startup ───────────────────────────────────────────────────────────────
+log_msg "start — h2w=$(read_h2w_state) kernel_headset=$(read_kernel_headset)"
+
+# Clear stale flags from previous run
+rm -f "$HEADSET_PLUGGED_FLAG" "$HEADSET_RETRIGGER" 2>/dev/null
+
+# Seed headset state
+if is_headset_connected; then
+    _state="on"
+    _last_hvol_pkg=""
+    log_msg "initial: headset connected"
+    on_connect
+else
+    _state="off"
+    _last_hvol_pkg=""
+    log_msg "initial: headset disconnected"
+fi
+
+# Seed OTG state and auto-enable if already connected
+if is_otg_connected; then _otg_state="on"; enable_otg
+else _otg_state="off"; fi
+
+# ── Layer 1: Real-time monitoring via logcat ──────────────────────────────
+logcat -b main -b system --line-buffered \
+    -s AudioService:V WiredDeviceManager:V HeadsetObserver:V UsbDeviceManager:V \
+    2>/dev/null | while IFS= read -r line; do
+    # Headset events
+    if echo "$line" | grep -qiE "ACTION_HEADSET_PLUG|headsetPlugged|wiredHeadset|onHeadsetConnectionStateChanged|setWiredDeviceConnectionState"; then
+        sleep 0.2
+        if is_headset_connected; then new_state="on"; else new_state="off"; fi
+        if [ "$new_state" != "$_state" ]; then
+            _state="$new_state"
+            if [ "$_state" = "on" ]; then on_connect; else on_disconnect; fi
+        fi
+    fi
+    # OTG events
+    if echo "$line" | grep -qiE "USB_STATE|usbConnected|hostConnected|USB_ACCESSORY|setCurrentFunction.*host|USB host"; then
+        sleep 0.2
+        if is_otg_connected; then new_otg="on"; else new_otg="off"; fi
+        if [ "$new_otg" != "$_otg_state" ]; then
+            _otg_state="$new_otg"
+            if [ "$_otg_state" = "on" ]; then enable_otg; else disable_otg; fi
+        fi
+    fi
+done &
+LOGCAT_PID=$!
+
+# ── Layer 2: Polling loop every 3s ───────────────────────────────────────
+# Handles: missed logcat events, app switches, WebUI save retrigger
+while true; do
+    sleep 3
+
+    # ── Headset plug/unplug ───────────────────────────────────
+    if is_headset_connected; then cur="on"; else cur="off"; fi
+    if [ "$cur" != "$_state" ]; then
+        _state="$cur"
+        if [ "$_state" = "on" ]; then on_connect; else on_disconnect; fi
+    fi
+
+    # ── OTG plug/unplug ──────────────────────────────────────
+    if is_otg_connected; then cur_otg="on"; else cur_otg="off"; fi
+    if [ "$cur_otg" != "$_otg_state" ]; then
+        _otg_state="$cur_otg"
+        if [ "$_otg_state" = "on" ]; then enable_otg; else disable_otg; fi
+    fi
+
+    # ── Per-app vol: app switch + WebUI retrigger ─────────────
+    check_app_switch
+    check_retrigger
+done

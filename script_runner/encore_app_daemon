@@ -1,0 +1,416 @@
+#!/system/bin/sh
+# =============================================================================
+#  ENCORE APP DAEMON — Per-App Tweaks Focus Monitor
+#  Applies gaming tweaks when an Encore-enabled app comes to foreground.
+#  Reverts when the app loses focus or exits.
+#
+#  Reads:  /data/adb/.config/encore/gamelist.json
+#  Uses:   DAVION_ENGINE gaming/normal mode scripts
+#          DAVION_ENGINE per-app RR/brightness/volume files
+# =============================================================================
+
+MODDIR="/data/adb/modules/GovThermal"
+LOG="/sdcard/GovThermal/GovThermal.log"
+RR_DIR="/sdcard/DAVION_ENGINE/refresh_locks"
+CFG_DIR="/sdcard/GovThermal/config"
+UNIVERSAL_RR_FILE="/sdcard/DAVION_ENGINE/universal_rr.txt"
+UNIVERSAL_BRIGHT_FILE="/sdcard/DAVION_ENGINE/universal_brightness.txt"
+UNIVERSAL_VOL_FILE="/sdcard/DAVION_ENGINE/universal_vol.txt"
+UNIVERSAL_SCREENTIMEOUT_FILE="$CFG_DIR/screen_timeout.txt"
+ENCORE_GAMELIST="/data/adb/.config/encore/gamelist.json"
+ENCORE_CFG="/data/adb/.config/encore/config.json"
+
+# Script paths
+GAMING_PROP="$MODDIR/DAVION_ENGINE/AI_MODE/gaming_mode/gaming_prop"
+GAMING_CPUSET="$MODDIR/DAVION_ENGINE/AI_MODE/gaming_mode/gaming_cpuset"
+LITE_GAMING="$MODDIR/DAVION_ENGINE/AI_MODE/gaming_mode/lite_gaming"
+NORMAL_PROP="$MODDIR/DAVION_ENGINE/AI_MODE/normal_mode/normal_prop"
+NORMAL_CPUSET="$MODDIR/DAVION_ENGINE/AI_MODE/normal_mode/normal_cpuset"
+
+# State tracking
+_active_pkg=""
+_active_mode=""   # "gaming" | "lite" | ""
+_dnd_active=0
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [ENCORE-DAEMON] $1" >> "$LOG"; }
+
+# ── Get current foreground package ───────────────────────────
+get_foreground_pkg() {
+    # Primary: dumpsys activity (most reliable)
+    local pkg
+    pkg=$(dumpsys activity top 2>/dev/null \
+        | grep -m1 "ACTIVITY" \
+        | grep -oE "[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+" \
+        | head -1)
+
+    # Fallback: top-app cpuset
+    if [ -z "$pkg" ]; then
+        local pid
+        for p in /proc/[0-9]*/cpuset; do
+            grep -q "top-app" "$p" 2>/dev/null || continue
+            pid=$(echo "$p" | cut -d/ -f3)
+            pkg=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' '\n' | head -1)
+            # skip system/surfaceflinger/systemui
+            case "$pkg" in
+                com.android.systemui|android|system_server|surfaceflinger) pkg="" ; continue ;;
+            esac
+            [ -n "$pkg" ] && break
+        done
+    fi
+    echo "$pkg"
+}
+
+# ── Read gamelist.json and check if a pkg is enabled ─────────
+gamelist_has_pkg() {
+    local pkg="$1"
+    [ -f "$ENCORE_GAMELIST" ] || return 1
+    grep -q "\"$pkg\"" "$ENCORE_GAMELIST" 2>/dev/null
+}
+
+# Returns the lite_mode value (true/false) for a pkg
+get_lite_mode() {
+    local pkg="$1"
+    [ -f "$ENCORE_GAMELIST" ] || echo "false"; return
+    # Extract the block for this pkg and find lite_mode
+    local val
+    val=$(awk -v p="\"$pkg\"" '
+        $0 ~ p { found=1 }
+        found && /lite_mode/ { 
+            match($0, /lite_mode.*:(true|false)/, a)
+            if (a[1]) { print a[1]; exit }
+        }
+        found && /}/ { exit }
+    ' "$ENCORE_GAMELIST" 2>/dev/null)
+    echo "${val:-false}"
+}
+
+# Returns the enable_dnd value (true/false) for a pkg
+get_enable_dnd() {
+    local pkg="$1"
+    [ -f "$ENCORE_GAMELIST" ] || echo "false"; return
+    local val
+    val=$(awk -v p="\"$pkg\"" '
+        $0 ~ p { found=1 }
+        found && /enable_dnd/ {
+            match($0, /enable_dnd.*:(true|false)/, a)
+            if (a[1]) { print a[1]; exit }
+        }
+        found && /}/ { exit }
+    ' "$ENCORE_GAMELIST" 2>/dev/null)
+    echo "${val:-false}"
+}
+
+# Check if enforce_lite_mode is globally set in config.json
+get_global_enforce_lite() {
+    [ -f "$ENCORE_CFG" ] || echo "false"; return
+    local val
+    val=$(grep -o '"enforce_lite_mode"[[:space:]]*:[[:space:]]*[a-z]*' "$ENCORE_CFG" 2>/dev/null \
+        | grep -o "true\|false" | head -1)
+    echo "${val:-false}"
+}
+
+# ── Apply per-app RR lock ─────────────────────────────────────
+apply_per_app_rr() {
+    local pkg="$1"
+    local mode_file="$RR_DIR/$pkg.mode"
+    if [ -f "$mode_file" ]; then
+        local mode_id
+        mode_id=$(tr -d '[:space:]' < "$mode_file")
+        [ -n "$mode_id" ] && [ "$mode_id" -eq "$mode_id" ] 2>/dev/null && \
+            service call SurfaceFlinger 1035 i32 "$mode_id" >/dev/null 2>&1 && \
+            log_msg "  RR locked: mode $mode_id for $pkg"
+    fi
+}
+
+# ── Restore RR to universal or auto ──────────────────────────
+restore_rr() {
+    if [ -f "$UNIVERSAL_RR_FILE" ]; then
+        local uid
+        uid=$(tr -d '[:space:]' < "$UNIVERSAL_RR_FILE")
+        [ -n "$uid" ] && [ "$uid" -eq "$uid" ] 2>/dev/null && \
+            service call SurfaceFlinger 1035 i32 "$uid" >/dev/null 2>&1
+    else
+        service call SurfaceFlinger 1035 i32 0 >/dev/null 2>&1
+    fi
+}
+
+# ── Apply per-app brightness ──────────────────────────────────
+apply_per_app_brightness() {
+    local pkg="$1"
+    local bright_file="$RR_DIR/$pkg.bright"
+    if [ -f "$bright_file" ]; then
+        local bv
+        bv=$(tr -d '[:space:]' < "$bright_file")
+        if [ -n "$bv" ] && [ "$bv" -ge 0 ] 2>/dev/null; then
+            settings put system screen_brightness_mode 0 2>/dev/null
+            settings put system screen_brightness "$bv" 2>/dev/null
+            log_msg "  Brightness locked: $bv for $pkg"
+        fi
+    fi
+}
+
+# ── Restore brightness to universal or auto ───────────────────
+restore_brightness() {
+    if [ -f "$UNIVERSAL_BRIGHT_FILE" ]; then
+        local ub
+        ub=$(tr -d '[:space:]' < "$UNIVERSAL_BRIGHT_FILE")
+        if [ -n "$ub" ] && [ "$ub" -ge 0 ] 2>/dev/null && [ "$ub" -le 255 ] 2>/dev/null; then
+            settings put system screen_brightness_mode 0 2>/dev/null
+            settings put system screen_brightness "$ub" 2>/dev/null
+            return
+        fi
+    fi
+    settings put system screen_brightness_mode 1 2>/dev/null
+}
+
+# ── Apply per-app volume ──────────────────────────────────────
+apply_per_app_volume() {
+    local pkg="$1"
+    local vol_file="$RR_DIR/$pkg.vol"
+    if [ -f "$vol_file" ]; then
+        local vv
+        vv=$(tr -d '[:space:]' < "$vol_file")
+        if [ -n "$vv" ] && [ "$vv" -ge 0 ] 2>/dev/null; then
+            cmd media_session volume --stream 3 --set "$vv" 2>/dev/null || \
+            media volume --stream 3 --set "$vv" 2>/dev/null
+            log_msg "  Volume locked: $vv for $pkg"
+        fi
+    fi
+}
+
+# ── Restore volume to universal or do nothing ─────────────────
+restore_volume() {
+    if [ -f "$UNIVERSAL_VOL_FILE" ]; then
+        local uv
+        uv=$(tr -d '[:space:]' < "$UNIVERSAL_VOL_FILE")
+        [ -n "$uv" ] && [ "$uv" -ge 0 ] 2>/dev/null && \
+            cmd media_session volume --stream 3 --set "$uv" 2>/dev/null || \
+            media volume --stream 3 --set "$uv" 2>/dev/null
+    fi
+}
+
+GLOBAL_SAT_FILE="/sdcard/DAVION_ENGINE_BoostColor/saturation_value"
+_encore_last_sat_pkg=""
+
+# ── Apply per-app saturation ──────────────────────────────────
+apply_per_app_saturation() {
+    local pkg="$1"
+    local sat_file="$RR_DIR/$pkg.sat"
+    if [ -f "$sat_file" ]; then
+        local sv
+        sv=$(tr -d '[:space:]' < "$sat_file")
+        if [ -n "$sv" ] && [ "$sv" -ge 0 ] 2>/dev/null && [ "$sv" -le 20 ] 2>/dev/null; then
+            local sat_val
+            sat_val=$(awk -v raw="$sv" 'BEGIN{printf "%.1f", raw / 10}')
+            service call SurfaceFlinger 1022 f "$sat_val" >/dev/null 2>&1
+            _encore_last_sat_pkg="$pkg"
+            log_msg "  Saturation locked: ${sat_val}x for $pkg"
+        fi
+    fi
+}
+
+# ── Restore saturation to global or default ───────────────────
+restore_saturation() {
+    [ -z "$_encore_last_sat_pkg" ] && return   # nothing was applied — skip
+    if [ -f "$GLOBAL_SAT_FILE" ]; then
+        local gs
+        gs=$(tr -d '[:space:]' < "$GLOBAL_SAT_FILE")
+        if [ -n "$gs" ]; then
+            service call SurfaceFlinger 1022 f "$gs" >/dev/null 2>&1
+            log_msg "  Saturation restored: ${gs}x (global)"
+            _encore_last_sat_pkg=""
+            return
+        fi
+    fi
+    service call SurfaceFlinger 1022 f 1.0 >/dev/null 2>&1
+    _encore_last_sat_pkg=""
+}
+
+# ── Per-app screen off timeout ────────────────────────────────
+# Tracks the pkg whose screen timeout is currently overriding the universal.
+_screentimeout_active_pkg=""
+
+apply_per_app_screentimeout() {
+    local pkg="$1"
+    local st_file="$RR_DIR/$pkg.screentimeout"
+    [ -f "$st_file" ] || return 1
+    local ms
+    ms=$(tr -d '[:space:]' < "$st_file")
+    [ -n "$ms" ] && [ "$ms" -gt 0 ] 2>/dev/null || return 1
+    settings put system screen_off_timeout "$ms" 2>/dev/null
+    _screentimeout_active_pkg="$pkg"
+    log_msg "  Screen timeout → ${ms}ms for $pkg"
+}
+
+restore_screentimeout() {
+    [ -z "$_screentimeout_active_pkg" ] && return   # nothing was applied
+    _screentimeout_active_pkg=""
+    # Restore to universal lock if set, else system default (30s)
+    if [ -f "$UNIVERSAL_SCREENTIMEOUT_FILE" ]; then
+        local ums
+        ums=$(tr -d '[:space:]' < "$UNIVERSAL_SCREENTIMEOUT_FILE")
+        if [ -n "$ums" ] && [ "$ums" -gt 0 ] 2>/dev/null; then
+            settings put system screen_off_timeout "$ums" 2>/dev/null
+            log_msg "  Screen timeout restored → ${ums}ms (universal)"
+            return
+        fi
+    fi
+    settings put system screen_off_timeout 30000 2>/dev/null
+    log_msg "  Screen timeout restored → 30000ms (default)"
+}
+
+enable_dnd() {
+    cmd notification set-dnd on 2>/dev/null || \
+    cmd notification set_ringer_mode 0 2>/dev/null || \
+    settings put global zen_mode 1 2>/dev/null
+    _dnd_active=1
+    log_msg "  DND: enabled"
+}
+
+disable_dnd() {
+    [ "$_dnd_active" -eq 1 ] || return
+    cmd notification set-dnd off 2>/dev/null || \
+    cmd notification set_ringer_mode 2 2>/dev/null || \
+    settings put global zen_mode 0 2>/dev/null
+    _dnd_active=0
+    log_msg "  DND: disabled"
+}
+
+# ── Activate tweaks for a specific app ───────────────────────
+activate_tweaks() {
+    local pkg="$1"
+    local lite_mode="$2"
+    local enable_dnd_val="$3"
+
+    log_msg "Activating tweaks for: $pkg (lite=$lite_mode, dnd=$enable_dnd_val)"
+
+    # Apply the right CPU/system profile
+    if [ "$lite_mode" = "true" ]; then
+        # Lite mode: battery-focused, lower frequencies
+        [ -x "$LITE_GAMING" ] && sh "$LITE_GAMING" >/dev/null 2>&1 &
+        _active_mode="lite"
+        log_msg "  Mode: LITE GAMING"
+    else
+        # Full gaming mode: performance props + cpuset
+        [ -x "$GAMING_PROP" ]   && sh "$GAMING_PROP"   >/dev/null 2>&1
+        [ -x "$GAMING_CPUSET" ] && sh "$GAMING_CPUSET" >/dev/null 2>&1
+        _active_mode="gaming"
+        log_msg "  Mode: GAMING"
+    fi
+
+    # Per-app peripherals
+    apply_per_app_rr "$pkg"
+    apply_per_app_brightness "$pkg"
+    apply_per_app_volume "$pkg"
+    apply_per_app_saturation "$pkg"
+    apply_per_app_screentimeout "$pkg"
+
+    # DND
+    [ "$enable_dnd_val" = "true" ] && enable_dnd
+
+    _active_pkg="$pkg"
+    # Signal to battery_guard not to override the governor
+    echo "$pkg" > /dev/.encore_tweaks_active 2>/dev/null
+}
+
+# ── Deactivate tweaks and revert to normal ────────────────────
+deactivate_tweaks() {
+    local pkg="$1"
+    log_msg "Deactivating tweaks for: $pkg"
+
+    # Revert CPU/system profile
+    [ -x "$NORMAL_PROP" ]   && sh "$NORMAL_PROP"   >/dev/null 2>&1
+    [ -x "$NORMAL_CPUSET" ] && sh "$NORMAL_CPUSET" >/dev/null 2>&1
+
+    # Restore per-app peripherals
+    restore_rr
+    restore_brightness
+    restore_volume
+    restore_saturation
+    restore_screentimeout
+
+    # DND
+    disable_dnd
+
+    _active_pkg=""
+    _active_mode=""
+    rm -f /dev/.encore_tweaks_active 2>/dev/null
+    log_msg "Normal mode restored"
+}
+
+# ── Main monitor loop ─────────────────────────────────────────
+log_msg "Started — monitoring foreground app for Encore tweaks"
+FLAG_FILE="/dev/.encore_gamelist_updated"
+
+while true; do
+
+    # Skip if gamelist doesn't exist (Encore not installed / no apps configured)
+    if [ ! -f "$ENCORE_GAMELIST" ]; then
+        sleep 3
+        continue
+    fi
+
+    # If WebUI just updated gamelist, force re-evaluation of current app
+    if [ -f "$FLAG_FILE" ]; then
+        rm -f "$FLAG_FILE"
+        # Force re-check by clearing cached pkg so the loop re-evaluates
+        if [ -n "$_active_pkg" ]; then
+            if ! gamelist_has_pkg "$_active_pkg"; then
+                # App was removed from gamelist while it was focused — revert
+                deactivate_tweaks "$_active_pkg"
+            else
+                # Settings changed for active app — reapply with new values
+                local_lite=$(get_lite_mode "$_active_pkg")
+                global_lite=$(get_global_enforce_lite)
+                [ "$global_lite" = "true" ] && local_lite="true"
+                dnd_val=$(get_enable_dnd "$_active_pkg")
+                deactivate_tweaks "$_active_pkg"
+                activate_tweaks "$_active_pkg" "$local_lite" "$dnd_val"
+            fi
+        fi
+    fi
+
+    current_pkg=$(get_foreground_pkg)
+    # ── Write shared foreground pkg for headset_daemon ────────
+    echo "$current_pkg" > /dev/.davion_last_fg_pkg 2>/dev/null
+
+    # ── Per-app screen timeout — applies for ALL apps ─────────
+    # (Encore tweaks handle it too for Encore apps via activate_tweaks;
+    #  this block handles ALL other apps that have .screentimeout set)
+    if [ "$current_pkg" != "$_active_pkg" ] || [ -z "$_active_pkg" ]; then
+        # Non-Encore app switch: handle screen timeout independently
+        if [ -z "$current_pkg" ] || [ ! -f "$RR_DIR/$current_pkg.screentimeout" ]; then
+            # New app has no per-app timeout → restore if we had one active
+            [ -n "$_screentimeout_active_pkg" ] && \
+                [ "$_screentimeout_active_pkg" != "$current_pkg" ] && \
+                restore_screentimeout
+        elif [ "$_screentimeout_active_pkg" != "$current_pkg" ]; then
+            # New app has per-app timeout → apply it
+            apply_per_app_screentimeout "$current_pkg"
+        fi
+    fi
+
+    # Nothing changed
+    [ "$current_pkg" = "$_active_pkg" ] && { sleep 1; continue; }
+
+    # ── Previous app lost focus → deactivate its tweaks ──────
+    if [ -n "$_active_pkg" ] && [ "$_active_pkg" != "$current_pkg" ]; then
+        deactivate_tweaks "$_active_pkg"
+    fi
+
+    # ── New app in foreground → check if it has tweaks ───────
+    if [ -n "$current_pkg" ] && gamelist_has_pkg "$current_pkg"; then
+        # Determine effective lite_mode (global override wins)
+        local_lite=$(get_lite_mode "$current_pkg")
+        global_lite=$(get_global_enforce_lite)
+        if [ "$global_lite" = "true" ]; then
+            effective_lite="true"
+        else
+            effective_lite="$local_lite"
+        fi
+        dnd_val=$(get_enable_dnd "$current_pkg")
+        activate_tweaks "$current_pkg" "$effective_lite" "$dnd_val"
+    fi
+
+    sleep 1
+done

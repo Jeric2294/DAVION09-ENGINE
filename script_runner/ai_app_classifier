@@ -1,0 +1,195 @@
+#!/system/bin/sh
+# =============================================================================
+#  AI APP CLASSIFIER — DAVION ENGINE
+#  Classifies foreground app into: gaming, media, social, browser,
+#  productivity, system, unknown
+#  Method 1: package name heuristics (instant, offline)
+#  Method 2: Claude API (network, cached permanently per-package)
+#  Output: /dev/.davion_app_class  (read by adaptive_freq + thermal daemons)
+# =============================================================================
+
+MODDIR="/data/adb/modules/GovThermal"
+CFG_DIR="/sdcard/GovThermal/config"
+CACHE_DIR="/sdcard/DAVION_ENGINE/ai_cache"
+LOG="/sdcard/GovThermal/GovThermal.log"
+FREQ_FILE="/sdcard/GovThermal/freq_scale.txt"
+API_KEY_FILE="$CFG_DIR/claude_api_key"
+CLASSIFY_RESULT="/dev/.davion_app_class"
+CLASSIFIER_PID_FILE="$CFG_DIR/ai_classifier.pid"
+CLASSIFIER_ENABLED_FILE="$CFG_DIR/ai_classifier_enabled"
+DE="$MODDIR/DAVION_ENGINE/AI_MODE/de_cpu_engine"
+
+BUSYBOX="$MODDIR/busybox"
+[ -x "$BUSYBOX" ] || BUSYBOX="busybox"
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [AI-CLASS] $1" >> "$LOG"; }
+
+# ── Pattern-based heuristic classifier (no network) ──────────────────────────
+classify_by_pattern() {
+    local pkg="$1"
+    case "$pkg" in
+        # Gaming — known publishers + keyword patterns
+        com.activision.*|com.garena.*|com.tencent.ig|com.tencent.tmgp.*|\
+        com.miHoYo.*|com.HoYoverse.*|com.riotgames.*|com.mobile.legends|\
+        com.supercell.*|com.epicgames.*|com.netease.*|com.kurogame.*|\
+        com.proximabeta.*|com.YoStarEN.*|com.hypergryph.*|com.cygames.*|\
+        com.axlebolt.*|com.farlightgames.*|com.ea.gp.*|com.pubg.*|\
+        com.roblox.*|com.mojang.*|com.levelinfinite.*|com.pearlabyss.*|\
+        com.square_enix.*|com.bandainamco.*|com.capcom.*|com.sega.*|\
+        com.nexon.*|com.kabam.*|com.king.*|com.gameloft.*|\
+        com.devsisters.*|com.smilegate.*|com.krafton.*|com.ncsoft.*|\
+        *game*|*games*|*gaming*|*rpg*|*fps*|*moba*)
+            echo "gaming" ;;
+
+        # Media / streaming / audio
+        com.netflix.*|com.spotify.*|com.youtube.*|com.google.android.youtube|\
+        com.amazon.avod.*|com.amazon.prime.*|com.disney.*|com.hbo.*|\
+        com.twitch.*|tv.plex.*|com.plexapp.*|com.vlc.*|org.videolan.*|\
+        com.viu.*|com.wetv.*|com.mxtech.*|com.soundcloud.*|\
+        com.deezer.*|com.tidal.*|com.apple.android.music|\
+        com.google.android.apps.youtube.music|com.pandora.*|\
+        *player*|*video*|*stream*|*podcast*|*music*|*audio*|*iptv*)
+            echo "media" ;;
+
+        # Social / messaging
+        com.facebook.*|com.instagram.*|com.whatsapp.*|com.twitter.*|\
+        com.snapchat.*|com.tiktok.*|org.telegram.*|com.viber.*|\
+        com.linkedin.*|com.reddit.*|com.pinterest.*|com.discord.*|\
+        com.kakao.*|com.line.*|com.naver.*|com.kik.*|\
+        *social*|*chat*|*messenger*|*message*|*dating*)
+            echo "social" ;;
+
+        # Browser
+        com.android.chrome|org.mozilla.*|com.brave.*|com.opera.*|\
+        com.microsoft.edge|com.duckduckgo.*|com.vivaldi.*|\
+        *browser*|*chromium*|*webkit*)
+            echo "browser" ;;
+
+        # Productivity
+        com.microsoft.*|com.google.android.gm|com.google.android.docs|\
+        com.google.android.sheets|com.google.android.slides|\
+        com.adobe.*|com.dropbox.*|com.evernote.*|com.notion.*|\
+        com.slack.*|com.zoom.*|us.zoom.*|com.teams.*|\
+        *office*|*document*|*pdf*|*editor*|*notes*|*calendar*)
+            echo "productivity" ;;
+
+        # System / launcher / UI
+        *launcher*|*systemui*|*settings*|*recents*|*overview*|\
+        android|com.android.*|com.google.android.inputmethod.*|\
+        com.google.android.packageinstaller)
+            echo "system" ;;
+
+        *) echo "unknown" ;;
+    esac
+}
+
+# ── Claude API fallback (cached per-package permanently) ─────────────────────
+classify_via_claude() {
+    local pkg="$1"
+    [ -f "$API_KEY_FILE" ] || return 1
+    local api_key
+    api_key=$(tr -d '[:space:]' < "$API_KEY_FILE" 2>/dev/null)
+    [ -n "$api_key" ] || return 1
+
+    mkdir -p "$CACHE_DIR"
+    local safe_name
+    safe_name=$(echo "$pkg" | tr '.' '_' | tr -cd '[:alnum:]_')
+    local cache_file="$CACHE_DIR/${safe_name}.class"
+
+    # Serve from cache if available
+    if [ -f "$cache_file" ]; then
+        cat "$cache_file"
+        return 0
+    fi
+
+    # POST to Claude API using busybox wget
+    local payload
+    payload="{\"model\":\"claude-haiku-4-5-20251001\",\"max_tokens\":10,\"messages\":[{\"role\":\"user\",\"content\":\"Android package: $pkg\\nClassify into one word only: gaming, media, social, browser, productivity, or unknown. Reply with the single word only, lowercase.\"}]}"
+
+    local response
+    response=$("$BUSYBOX" wget -q -O - \
+        --header="Content-Type: application/json" \
+        --header="x-api-key: $api_key" \
+        --header="anthropic-version: 2023-06-01" \
+        --post-data="$payload" \
+        "https://api.anthropic.com/v1/messages" 2>/dev/null)
+
+    [ -z "$response" ] && return 1
+
+    local class
+    class=$(echo "$response" | grep -o '"text":"[^"]*"' | head -1 \
+          | sed 's/"text":"//;s/"//' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+
+    case "$class" in
+        gaming|media|social|browser|productivity)
+            echo "$class" > "$cache_file"
+            echo "$class"
+            log_msg "Claude classified '$pkg' → $class (cached)"
+            return 0 ;;
+    esac
+    return 1
+}
+
+# ── Full classify: heuristic first, Claude fallback ──────────────────────────
+classify_app() {
+    local pkg="$1"
+    local result
+    result=$(classify_by_pattern "$pkg")
+    if [ "$result" = "unknown" ]; then
+        local api_class
+        api_class=$(classify_via_claude "$pkg")
+        [ -n "$api_class" ] && result="$api_class"
+    fi
+    echo "$result"
+}
+
+# ── Apply profile based on classification ────────────────────────────────────
+apply_profile() {
+    local pkg="$1"
+    local class="$2"
+    echo "$class" > "$CLASSIFY_RESULT"
+    log_msg "$pkg → $class"
+
+    [ -f "$DE" ] || return
+    . "$DE"
+
+    case "$class" in
+        gaming)
+            # Let gaming daemon / encore daemon handle gaming apps fully
+            ;;
+        media)
+            # Balanced: smooth decode without maxing out
+            de_balanced_cpu 2>/dev/null
+            ;;
+        social|browser|productivity)
+            de_balanced_cpu 2>/dev/null
+            ;;
+        system)
+            # Launcher/homescreen: save power
+            de_powersave_cpu 2>/dev/null
+            ;;
+    esac
+}
+
+# ── Daemon main loop ──────────────────────────────────────────────────────────
+echo $$ > "$CLASSIFIER_PID_FILE"
+log_msg "Daemon started (PID $$)"
+
+_last_pkg=""
+
+while true; do
+    # Honour kill-switch
+    if [ ! -f "$CLASSIFIER_ENABLED_FILE" ]; then
+        log_msg "Disabled — exiting"
+        rm -f "$CLASSIFIER_PID_FILE"
+        exit 0
+    fi
+
+    pkg=$(cat /dev/.davion_last_fg_pkg 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$pkg" ] && [ "$pkg" != "$_last_pkg" ]; then
+        class=$(classify_app "$pkg")
+        apply_profile "$pkg" "$class"
+        _last_pkg="$pkg"
+    fi
+    sleep 2
+done

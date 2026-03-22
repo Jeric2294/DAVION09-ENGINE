@@ -1,0 +1,130 @@
+#!/system/bin/sh
+# ─────────────────────────────────────────────────────────────
+#  Thermal Watchdog v2 — DAVION ENGINE
+#  Persistent background daemon.
+#  Every 20s it checks if thermal state is still "disabled"
+#  and re-applies the freeze if any daemon respawned.
+#  Optimized: smarter respawn detection, reduces writes
+# ─────────────────────────────────────────────────────────────
+
+MODDIR="/data/adb/modules/GovThermal"
+CFG_DIR="/sdcard/GovThermal/config"
+THERMAL_STATE_FILE="$CFG_DIR/thermal_state"
+THERMAL_SCRIPT="$MODDIR/script_runner/thermal_toggle"
+PID_FILE="$MODDIR/thermal_watchdog.pid"
+LOG="/sdcard/GovThermal/GovThermal.log"
+
+# ── Kill any previously running watchdog ─────────────────────
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$OLD_PID" ] && [ "$OLD_PID" != "$$" ]; then
+        kill "$OLD_PID" 2>/dev/null
+    fi
+fi
+echo $$ > "$PID_FILE"
+
+wdlog() { echo "[$(date '+%H:%M:%S')] [WATCHDOG] $1" >> "$LOG"; }
+wdlog "Started (PID $$)"
+
+# ── Helper: check if any thermal service is running ──────────
+any_thermal_running() {
+    for svc in thermald vendor.thermal-hal-2-0.mtk vendor.thermal-hal-2-0 thermal_core thermal_manager thermalloadalgod; do
+        local state; state=$(getprop "init.svc.$svc" 2>/dev/null)
+        [ "$state" = "running" ] && return 0
+    done
+    return 1
+}
+
+# ── Helper: lightweight kernel-level thermal re-freeze ───────
+reapply_freeze() {
+    local did_work=0
+
+    # Stop any thermal services that respawned
+    for svc in thermald vendor.thermal-hal-2-0.mtk vendor.thermal-hal-2-0 thermal_core thermal_manager thermalloadalgod; do
+        local state; state=$(getprop "init.svc.$svc" 2>/dev/null)
+        if [ "$state" = "running" ]; then
+            stop "$svc" 2>/dev/null
+            setprop ctl.stop "$svc" 2>/dev/null
+            did_work=1
+        fi
+    done
+
+    # Re-disable sysfs thermal zones that re-enabled
+    for zone in /sys/class/thermal/thermal_zone*; do
+        [ -f "$zone/mode" ] || continue
+        local mode; mode=$(cat "$zone/mode" 2>/dev/null)
+        if [ "$mode" = "enabled" ]; then
+            chmod 644 "$zone/mode" 2>/dev/null
+            echo "disabled" > "$zone/mode" 2>/dev/null
+            chmod 444 "$zone/mode" 2>/dev/null
+            did_work=1
+        fi
+    done
+
+    # Re-lock thm_enable if it changed
+    if [ -f /sys/class/thermal/thermal_zone0/thm_enable ]; then
+        local val; val=$(cat /sys/class/thermal/thermal_zone0/thm_enable 2>/dev/null)
+        if [ "$val" != "0" ]; then
+            chmod 644 /sys/class/thermal/thermal_zone0/thm_enable 2>/dev/null
+            echo 0 > /sys/class/thermal/thermal_zone0/thm_enable 2>/dev/null
+            chmod 444 /sys/class/thermal/thermal_zone0/thm_enable 2>/dev/null
+            did_work=1
+        fi
+    fi
+
+    # Freeze new thermal PIDs
+    for pid in $(pgrep -f "thermal" 2>/dev/null); do
+        [ "$pid" = "$$" ]   && continue
+        [ "$pid" = "$PPID" ] && continue
+        local state; state=$(cat /proc/$pid/status 2>/dev/null | grep -w State | awk '{print $2}')
+        if [ "$state" != "T" ]; then  # T = stopped/frozen
+            kill -SIGSTOP "$pid" 2>/dev/null
+            did_work=1
+        fi
+    done
+
+    # MTK driver limits
+    if [ -f /proc/driver/thermal/tzcpu ]; then
+        local t="125"
+        local nc="0 0 no-cooler 0 0 no-cooler 0 0 no-cooler 0 0 no-cooler 0 0 no-cooler 0 0 no-cooler 0 0 no-cooler 0 0 no-cooler 0 0 no-cooler"
+        echo "1 ${t}000 0 mtktscpu-sysrst $nc 200"      > /proc/driver/thermal/tzcpu      2>/dev/null
+        echo "1 ${t}000 0 mtktspmic-sysrst $nc 1000"    > /proc/driver/thermal/tzpmic     2>/dev/null
+        echo "1 ${t}000 0 mtktsbattery-sysrst $nc 1000" > /proc/driver/thermal/tzbattery  2>/dev/null
+        echo "1 ${t}000 0 mtktscharger-sysrst $nc 2000" > /proc/driver/thermal/tzcharger  2>/dev/null
+        echo "1 ${t}000 0 mtktswmt-sysrst $nc 1000"     > /proc/driver/thermal/tzwmt      2>/dev/null
+    fi
+
+    cmd thermalservice override-status 0 2>/dev/null
+
+    if [ -f /proc/gpufreq/gpufreq_power_limited ]; then
+        echo "ignore_thermal_protect 1" > /proc/gpufreq/gpufreq_power_limited 2>/dev/null
+        echo "ignore_pbm_limited 1"     > /proc/gpufreq/gpufreq_power_limited 2>/dev/null
+    fi
+
+    [ "$did_work" = "1" ] && wdlog "Re-freeze applied"
+}
+
+# ── Main watchdog loop ────────────────────────────────────────
+FULL_PASS_COUNTER=0
+
+while true; do
+    sleep 20
+
+    # Exit cleanly if user re-enabled thermal
+    CURRENT=$(tr -d '[:space:]' < "$THERMAL_STATE_FILE" 2>/dev/null)
+    if [ "$CURRENT" != "disabled" ]; then
+        wdlog "Thermal re-enabled by user — exiting"
+        rm -f "$PID_FILE"
+        exit 0
+    fi
+
+    reapply_freeze
+
+    # Full pass every ~5 minutes (15 × 20s)
+    FULL_PASS_COUNTER=$((FULL_PASS_COUNTER + 1))
+    if [ "$FULL_PASS_COUNTER" -ge 15 ]; then
+        FULL_PASS_COUNTER=0
+        sh "$THERMAL_SCRIPT" disable 2>/dev/null
+        wdlog "Full disable pass applied"
+    fi
+done

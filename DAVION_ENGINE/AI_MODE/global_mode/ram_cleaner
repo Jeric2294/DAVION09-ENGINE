@@ -1,0 +1,99 @@
+#!/system/bin/sh
+### ==== FLOOD GUARD BEGIN ==== ###
+SCRIPT_NAME="$(basename "$0")"
+STATE_DIR="/data/adb/modules/GovThermal/.guard"
+mkdir -p "$STATE_DIR"
+RUN_TS_FILE="$STATE_DIR/${SCRIPT_NAME}.last"
+COUNT_FILE="$STATE_DIR/${SCRIPT_NAME}.count"
+NOW=$(date +%s)
+LAST=$(cat "$RUN_TS_FILE" 2>/dev/null || echo 0)
+COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+MIN_INTERVAL=5; MAX_RUNS=5; WINDOW=60
+[ $((NOW - LAST)) -lt $MIN_INTERVAL ] && exit 0
+if [ $((NOW - LAST)) -lt $WINDOW ]; then COUNT=$((COUNT + 1)); else COUNT=1; fi
+if [ "$COUNT" -gt "$MAX_RUNS" ]; then
+  echo "[FLOOD-GUARD] $SCRIPT_NAME blocked" >> /sdcard/DAVION_ENGINE/flood_guard.log
+  exit 0
+fi
+echo "$NOW" > "$RUN_TS_FILE"
+echo "$COUNT" > "$COUNT_FILE"
+### ==== FLOOD GUARD END ==== ###
+
+# -------------------------
+# RAM AUTO-CLEANER v2 — DAVION ENGINE
+# Smarter memory reclaim: avoids drop_caches thrashing
+# -------------------------
+LOG_FILE="/sdcard/DAVION_ENGINE/DAVION_ENGINE.log"
+RAM_THRESHOLD=75          # Only clean above 75% usage (was 50%)
+CRITICAL_THRESHOLD=90     # Aggressive clean at 90%
+MAX_LOG_LINES=300
+
+log_msg() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    local lines; lines=$(wc -l < "$LOG_FILE" 2>/dev/null)
+    if [ "${lines:-0}" -gt "$MAX_LOG_LINES" ]; then
+        tail -n "$MAX_LOG_LINES" "$LOG_FILE" > "${LOG_FILE}.tmp" && \
+        mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+}
+
+auto_focus_ram() {
+    local MEM_TOTAL MEM_AVAIL MEM_USED_PCT
+    MEM_TOTAL=$(grep MemTotal     /proc/meminfo | awk '{print $2}')
+    MEM_AVAIL=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+    MEM_USED_PCT=$(( (MEM_TOTAL - MEM_AVAIL) * 100 / MEM_TOTAL ))
+
+    log_msg "RAM Check: ${MEM_USED_PCT}% usage (avail: $((MEM_AVAIL / 1024))MB)"
+
+    if [ "$MEM_USED_PCT" -lt "$RAM_THRESHOLD" ]; then
+        return 0  # Nothing to do
+    fi
+
+    log_msg "High RAM: ${MEM_USED_PCT}% — starting smart reclaim..."
+
+    # 1. Soft reclaim via ActivityManager (does NOT thrash page cache)
+    #    Kill cached background apps by sending trim signals
+    local foreground_pkg
+    foreground_pkg=$(dumpsys activity 2>/dev/null | grep -m1 'mResumedActivity' | \
+        grep -oE '[a-z][a-zA-Z0-9_]*\.[a-zA-Z0-9_.]+' | head -n1)
+
+    # Kill only CACHED (not VISIBLE or PERCEPTIBLE) processes
+    dumpsys meminfo 2>/dev/null | grep -E '^\s+[0-9]+ kB:' -A1 | \
+        grep -E 'Cached' -A100 | grep -oE '[a-z][a-zA-Z0-9_]+\.[a-zA-Z0-9_.]+ \(pid [0-9]+\)' | \
+        while read pkg rest; do
+            pkg="${pkg% (pid*}"
+            case "$pkg" in
+                com.android.systemui|com.android.launcher*|"$foreground_pkg") continue ;;
+            esac
+            am kill "$pkg" 2>/dev/null
+        done
+
+    # 2. Sync dirty pages
+    sync
+
+    # 3. Only use drop_caches=3 at critical threshold (it drops page cache too)
+    if [ "$MEM_USED_PCT" -ge "$CRITICAL_THRESHOLD" ]; then
+        log_msg "CRITICAL RAM: ${MEM_USED_PCT}% — dropping caches"
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+    else
+        # Softer: only free dentries/inodes (not page cache)
+        echo 2 > /proc/sys/vm/drop_caches 2>/dev/null
+    fi
+
+    # 4. Compact memory only if severe
+    if [ "$MEM_USED_PCT" -ge "$CRITICAL_THRESHOLD" ]; then
+        echo 1 > /proc/sys/vm/compact_memory 2>/dev/null
+    fi
+
+    local MEM_AVAIL_AFTER FREED_MB
+    MEM_AVAIL_AFTER=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+    FREED_MB=$(( (MEM_AVAIL_AFTER - MEM_AVAIL) / 1024 ))
+    log_msg "RAM reclaim done. Freed ~${FREED_MB}MB. Available: $((MEM_AVAIL_AFTER / 1024))MB"
+}
+
+log_msg "RAM Focus Service Started"
+
+while true; do
+    auto_focus_ram
+    sleep 90  # Extended interval to reduce overhead (was 60s)
+done

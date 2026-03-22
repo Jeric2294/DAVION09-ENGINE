@@ -1,0 +1,1511 @@
+#!/system/bin/sh
+MOD_DIR="/data/adb/modules/GovThermal"
+# --- BUSYBOX INTEGRATION ---
+BB="$MOD_DIR/busybox"
+[ ! -x "$BB" ] && { echo "FATAL: BusyBox missing"; exit 1; }
+
+# Wrap essential tools
+grep() { "$BB" grep "$@"; }; sed() { "$BB" sed "$@"; }; awk() { "$BB" awk "$@"; }
+cut() { "$BB" cut "$@"; }; head() { "$BB" head "$@"; }; tail() { "$BB" tail "$@"; }
+wc() { "$BB" wc "$@"; }; date() { "$BB" date "$@"; }; ionice() { "$BB" ionice "$@"; }
+renice() { "$BB" renice "$@"; }; mkswap() { "$BB" mkswap "$@"; }; swapon() { "$BB" swapon "$@"; }
+swapoff() { "$BB" swapoff "$@"; }; free() { "$BB" free "$@"; }
+
+PIDFILE="/data/adb/modules/GovThermal/logcat.pid"
+
+echo $$ > "$PIDFILE"
+
+# Set highest CPU priority
+renice -n -20 -p $$
+
+# Prevent Low Memory Killer (LMK) from targeting this process
+if [ -f /proc/$$/oom_score_adj ]; then
+    echo -1000 > /proc/$$/oom_score_adj
+fi
+
+# Move to top-app cpuset to ensure the script isn't throttled
+echo $$ > /dev/cpuset/top-app/tasks 2>/dev/null
+
+# --- CONFIGURATION ---
+GAME_LIST_FILE="/sdcard/DAVION_ENGINE/game_list.txt"
+WHITELIST_FILE="/sdcard/DAVION_ENGINE/whitelist.txt"
+REFRESH_LOCK_DIR="/sdcard/DAVION_ENGINE/refresh_locks"
+GLOBAL_SAT_FILE="/sdcard/DAVION_ENGINE_BoostColor/saturation_value"
+_last_sat_pkg=""   # tracks which pkg last had per-app sat applied
+BATT_SAVER_FLAG="/sdcard/GovThermal/config/batt_saver_enabled"
+BATT_SAVER_SPARE="/sdcard/DAVION_ENGINE/batt_saver_spare.txt"
+# Volume apply helper (media_session preferred, fallback to media)
+apply_volume() {
+    local VOL="$1"
+    cmd media_session volume --stream 3 --set "$VOL" >/dev/null 2>&1
+    media volume --stream 3 --set "$VOL" >/dev/null 2>&1
+}
+
+# --- CONN LAUNCH SMART SWITCH ---
+# Enables the required connection for a new app and disables the old one
+# if the previous app was using a different type (wifi→data or data→wifi).
+apply_conn_launch() {
+    local pkg="$1"
+    local new_conn="$2"
+    local prev_conn=""
+    [ -f "$_CL_LAST_CONN" ] && prev_conn=$(tr -d '[:space:]' < "$_CL_LAST_CONN" 2>/dev/null)
+
+    # Cancel any pending idle WiFi-off timer
+    if [ -f "$_CL_IDLE_PID" ]; then
+        local _idle_pid
+        _idle_pid=$(tr -d '[:space:]' < "$_CL_IDLE_PID" 2>/dev/null)
+        [ -n "$_idle_pid" ] && kill "$_idle_pid" 2>/dev/null
+        rm -f "$_CL_IDLE_PID"
+    fi
+
+    # Read actual current connection states
+    local _wifi_on _data_on _raw
+    _raw=$(settings get global wifi_on 2>/dev/null | tr -d '[:space:]')
+    case "$_raw" in
+        1) _wifi_on="1" ;;
+        0) _wifi_on="0" ;;
+        *) _wifi_on=$(dumpsys wifi 2>/dev/null | grep -c "Wi-Fi is enabled" | tr -d '[:space:]'); [ "$_wifi_on" = "1" ] || _wifi_on="0" ;;
+    esac
+    _raw=$(settings get global mobile_data 2>/dev/null | tr -d '[:space:]')
+    case "$_raw" in
+        1) _data_on="1" ;;
+        *) _data_on="0" ;;
+    esac
+
+    case "$new_conn" in
+        wifi)
+            # Only enable WiFi if it's actually off
+            if [ "$_wifi_on" != "1" ]; then
+                svc wifi enable 2>/dev/null
+                log_msg "📶 WiFi enabled → $pkg"
+            else
+                log_msg "📶 WiFi already on → $pkg (no change)"
+            fi
+            # Only disable data if it was the previous conn type (avoid disrupting unrelated data)
+            if [ "$prev_conn" = "data" ] || [ "$prev_conn" = "both" ]; then
+                svc data disable 2>/dev/null
+                log_msg "📶 Data off (prev=$prev_conn) → $pkg"
+            fi
+            ;;
+        data)
+            # Only enable data if it's actually off
+            if [ "$_data_on" != "1" ]; then
+                svc data enable 2>/dev/null
+                log_msg "📡 Data enabled → $pkg"
+            else
+                log_msg "📡 Data already on → $pkg (no change)"
+            fi
+            # Only disable WiFi if it was the previous conn type
+            if [ "$prev_conn" = "wifi" ] || [ "$prev_conn" = "both" ]; then
+                svc wifi disable 2>/dev/null
+                log_msg "📡 WiFi off (prev=$prev_conn) → $pkg"
+            fi
+            ;;
+        both)
+            # Only enable what's not already on
+            [ "$_wifi_on" != "1" ] && svc wifi enable 2>/dev/null && log_msg "⚡ WiFi enabled → $pkg"
+            [ "$_data_on" != "1" ] && svc data enable 2>/dev/null && log_msg "⚡ Data enabled → $pkg"
+            if [ "$_wifi_on" = "1" ] && [ "$_data_on" = "1" ]; then
+                log_msg "⚡ WiFi+Data already on → $pkg (no change)"
+            fi
+            ;;
+    esac
+    echo "$new_conn" > "$_CL_LAST_CONN" 2>/dev/null
+}
+
+# Start the idle conn-off 20s timer — turns off whatever conn was last enabled
+# Fires for wifi, data, or both. Cancels if a configured app launches within 20s.
+start_idle_conn_timer() {
+    [ -f "$CONN_IDLE_WIFI_OFF_FILE" ] || return
+    local last_conn=""
+    [ -f "$_CL_LAST_CONN" ] && last_conn=$(tr -d '[:space:]' < "$_CL_LAST_CONN" 2>/dev/null)
+    # Only start if there was a previously active conn to clean up
+    case "$last_conn" in
+        wifi|data|both) ;;
+        *) return ;;
+    esac
+
+    # Kill any previous timer
+    if [ -f "$_CL_IDLE_PID" ]; then
+        local _p
+        _p=$(tr -d '[:space:]' < "$_CL_IDLE_PID" 2>/dev/null)
+        [ -n "$_p" ] && kill "$_p" 2>/dev/null
+        rm -f "$_CL_IDLE_PID"
+    fi
+
+    local _snap_conn="$last_conn"
+    (
+        sleep 20
+        # Check what's in foreground now
+        curr_fg=$(tr -d '[:space:]' < /dev/.davion_last_fg_pkg 2>/dev/null)
+        # If a configured conn app is active — do not turn off
+        curr_conn_file="$REFRESH_LOCK_DIR/${curr_fg}.conn"
+        curr_legacy_file="$REFRESH_LOCK_DIR/${curr_fg}.wifi"
+        if [ -f "$curr_conn_file" ] || [ -f "$curr_legacy_file" ]; then
+            rm -f "$_CL_IDLE_PID"
+            return
+        fi
+        # If a real user app (not launcher/recents/systemui) is foreground — do not turn off
+        case "$curr_fg" in
+            *launcher*|*systemui*|*recents*|*recenttasks*|*overview*|*nexuslauncher*|\
+            *trebuchet*|*lawnchair*|*home*|android|"")
+                # User is idle / on home / recents — safe to turn off
+                ;;
+            *)
+                # Some other app is in foreground — cancel
+                rm -f "$_CL_IDLE_PID"
+                return
+                ;;
+        esac
+        # Turn off whatever was last enabled
+        case "$_snap_conn" in
+            wifi)
+                svc wifi disable 2>/dev/null
+                log_msg "📶 WiFi auto-off after 20s (idle/recents)"
+                ;;
+            data)
+                svc data disable 2>/dev/null
+                log_msg "📡 Data auto-off after 20s (idle/recents)"
+                ;;
+            both)
+                svc wifi disable 2>/dev/null
+                svc data disable 2>/dev/null
+                log_msg "⚡ WiFi+Data auto-off after 20s (idle/recents)"
+                ;;
+        esac
+        echo "" > "$_CL_LAST_CONN" 2>/dev/null
+        rm -f "$_CL_IDLE_PID"
+    ) &
+    echo $! > "$_CL_IDLE_PID"
+    log_msg "⏱️ Idle conn-off timer started (20s) — last: $_snap_conn"
+}
+
+# --- KILL OTHERS ON LAUNCH ---
+apply_killothers() {
+    local TARGET_PKG="$1"
+    local BL_FILE="$REFRESH_LOCK_DIR/${TARGET_PKG}.killothers_bl"
+    local TMP_FILE="/data/local/tmp/davion_killed_$(echo "$TARGET_PKG" | tr '.' '_').tmp"
+    rm -f "$TMP_FILE"
+    (
+        pm list packages -3 2>/dev/null | cut -d: -f2 | while read -r pkg; do
+            [ -z "$pkg" ] && continue
+            [ "$pkg" = "$TARGET_PKG" ] && continue
+            case "$pkg" in
+                io.github.kernelsu*|me.bmax.apatch*|com.topjohnwu.magisk*) continue ;;
+            esac
+            if [ -f "$BL_FILE" ] && grep -qxF "$pkg" "$BL_FILE" 2>/dev/null; then
+                continue
+            fi
+            am force-stop "$pkg" 2>/dev/null
+            echo "$pkg" | awk -F. '{print $NF}' >> "$TMP_FILE"
+        done
+
+        KILLED_COUNT=0
+        KILLED_NAMES=""
+        if [ -f "$TMP_FILE" ]; then
+            while read -r n; do
+                [ -z "$n" ] && continue
+                KILLED_COUNT=$((KILLED_COUNT + 1))
+                if [ -z "$KILLED_NAMES" ]; then
+                    KILLED_NAMES="$n"
+                else
+                    KILLED_NAMES="$KILLED_NAMES, $n"
+                fi
+            done < "$TMP_FILE"
+            rm -f "$TMP_FILE"
+        fi
+        log_msg "Kill Others: stopped $KILLED_COUNT app(s) for $TARGET_PKG"
+        if [ "$KILLED_COUNT" -gt 0 ]; then
+            TARGET_SHORT=$(echo "$TARGET_PKG" | awk -F. '{print $NF}' | \
+                awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+            # Capitalize first letter of each app name
+            KILLED_NAMES_CAP=$(echo "$KILLED_NAMES" | \
+                awk '{
+                    n = split($0, a, ", ")
+                    out = ""
+                    for (i=1; i<=n; i++) {
+                        word = a[i]
+                        first = substr(word,1,1)
+                        rest  = substr(word,2)
+                        cap   = toupper(first) rest
+                        if (i==1) out = cap
+                        else out = out "  •  " cap
+                    }
+                    print out
+                }')
+            DIVIDER="━━━━━━━━━━━━━━━━━━━━━━━━"
+            MSG="${DIVIDER}
+⚔  ${KILLED_COUNT} App(s) Terminated
+${DIVIDER}
+${KILLED_NAMES_CAP}
+${DIVIDER}
+▸ DAVION°ENGINE · Kill Others"
+            su -lp 2000 -c "cmd notification post -S bigtext -t '🗡️ Killer / Suspect — ${TARGET_SHORT}' tag '${MSG}'" >/dev/null 2>&1
+        fi
+    ) &
+}
+
+LOG_FILE="/sdcard/DAVION_ENGINE/DAVION_ENGINE.log"
+CURRENT_MODE="NONE"
+
+# External Script Paths
+EXTERNAL_CFG="/sdcard/DAVION_ENGINE"
+SCRIPT_RUNNER="$MOD_DIR/script_runner/global"
+DISABLE_THERMAL_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/disable_thermal"
+PERFORMANCE_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/performance"
+SCREEN_OFF_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/normal_mode/powersave"
+CPUSET_NORMAL_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/normal_mode/normal_cpuset"
+NORMAL_PROP_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/normal_mode/normal_prop"
+BYPASS_OFF_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/normal_mode/bypass_off"
+GAMING_PROP_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/gaming_prop"
+GAMING_PROP2_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/gaming_prop_2"
+AUTOFREQ_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/auto_frequency/auto_frequency"
+LIMITER_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/auto_frequency/cpulimiter"
+LITE_GAMING_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/lite_gaming"
+UNLOCK_FPS_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/unlockfps"
+LIMIT_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/limit"
+UNLOCK_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/unlock"
+SF_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/auto_frequency/surfaceflinger"
+RESOURCES_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/global_mode/resources_tweaks"
+WEBVIEW_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/global_mode/webview_tweaks"
+TOUCH="$MOD_DIR/touch_detection/touch2"
+MANUAL_GLOBAL_FILE="$MOD_DIR/script_runner/davion_engine_manual"
+NOTIFY_ENABLED_FILE="$EXTERNAL_CFG/enable_notifications"
+VOLTAGE_OFFSET="$MOD_DIR/script_runner/davion_engine_eem_boot"
+LIMITER_FILE="$EXTERNAL_CFG/enable_limiter"
+APP_OPTIMIZE="$MOD_DIR/DAVION_ENGINE/AI_MODE/gaming_mode/app_optimizer"
+
+# --- NOTIFICATION UTILITY ---
+notify_engine() {
+    # Skip if notification toggle is OFF
+    [ ! -f "$NOTIFY_ENABLED_FILE" ] && return 0
+
+    RAW_TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)
+    B_TEMP="$((RAW_TEMP / 10)).$((RAW_TEMP % 10))°C"
+    local title="$1"
+    local msg="$2"
+    su -lp 2000 -c "cmd notification post -S bigtext -t '$title' tag '$msg | temp: $B_TEMP'" >/dev/null 2>&1
+}
+
+log_msg() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    [ "$(wc -l < $LOG_FILE)" -gt 200 ] &&
+        tail -n 200 "$LOG_FILE" > "$LOG_FILE.tmp" &&
+        mv "$LOG_FILE.tmp" "$LOG_FILE"
+}
+
+run_external_binary() {
+    SCRIPT_PATH="$1"
+    if [ ! -x "$SCRIPT_PATH" ]; then
+        log_msg "❌ Binary not executable: $SCRIPT_PATH"
+        return 1
+    fi
+
+    # Simple: just run it (assume main logic prevents duplicates)
+    "$SCRIPT_PATH" >/dev/null 2>&1 &
+}
+
+# --- ZRAM MANAGER ---
+. "$MOD_DIR/DAVION_ENGINE/AI_MODE/global_mode/zram_manager"
+
+apply_gaming_logic() {
+    local pkg_name="$1"
+      
+    run_external_binary "$SCRIPT_RUNNER"  
+    run_external_binary "$APP_OPTIMIZE" 
+    echo FROZEN > /dev/freezer/frozen/freezer.state
+                            
+    if [ -f "$EXTERNAL_CFG/enable_auto_freq" ] && [ -f "$AUTOFREQ_PATH" ]; then
+        run_external_binary "$AUTOFREQ_PATH"
+    fi
+    if [ -f "$EXTERNAL_CFG/enable_performance" ] && [ -f "$PERFORMANCE_PATH" ]; then     
+        run_external_binary "$PERFORMANCE_PATH"
+    fi
+    if [ -f "$EXTERNAL_CFG/enable_gaming_prop" ] && [ -f "$GAMING_PROP_PATH" ]; then
+        run_external_binary "$GAMING_PROP_PATH"
+    fi        
+    if [ -f "$EXTERNAL_CFG/enable_highframerate" ] && [ -f "$UNLOCK_FPS_PATH" ]; then       
+        run_external_binary "$UNLOCK_FPS_PATH"
+    fi
+    if [ -f "$EXTERNAL_CFG/enable_gaming_prop2" ] && [ -f "$GAMING_PROP2_PATH" ]; then
+        run_external_binary "$GAMING_PROP2_PATH"
+    fi
+        pkill -f touch2
+      
+    for c in /sys/devices/system/cpu/cpu*/core_ctl; do echo 0 > "$c/enable"; done
+    
+    CURRENT_MODE="GAMING"
+    log_msg "✅ Gaming Mode: $pkg_name"
+    notify_engine "🎮 Gaming Mode Active" "App: $pkg_name | Cores Locked"
+}
+
+apply_non_gaming_logic() {
+    [ "$CURRENT_MODE" = "NORMAL" ] && return
+    log_msg "🔋 [MODE] NORMAL: Releasing frequency locks..."
+    
+    pkill -f bypass_on
+    echo THAWED > /dev/freezer/frozen/freezer.state
+    
+    if [ -f "$EXTERNAL_CFG/enable_lite_gaming" ] && [ -f "$LIMIT_PATH" ]; then       
+        run_external_binary "$LIMIT_PATH"
+    fi
+    
+    if [ -f "$EXTERNAL_CFG/enable_disable_thermal" ] && [ -f "$DISABLE_THERMAL_PATH" ]; then      
+        run_external_binary "$DISABLE_THERMAL_PATH"
+    fi
+    if [ -f "$EXTERNAL_CFG/enable_performance" ] && [ -f "$PERFORMANCE_PATH" ]; then     
+        run_external_binary "$PERFORMANCE_PATH"
+    fi   
+    if [ -f "$EXTERNAL_CFG/enable_highframerate" ] && [ -f "$UNLOCK_PATH" ]; then       
+        run_external_binary "$UNLOCK_PATH"
+    fi
+    
+    # Notify immediately when leaving gaming mode
+    notify_engine "🔋 Normal Mode" "Optimization Balanced | Cooling Active"
+
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        MIN_VAL=$(cat "$policy/cpuinfo_min_freq")
+        MAX_VAL=$(cat "$policy/cpuinfo_max_freq")
+        echo "schedutil" > "$policy/scaling_governor"
+        echo "$MIN_VAL" > "$policy/scaling_min_freq"
+        echo "$MAX_VAL" > "$policy/scaling_max_freq"
+    done
+
+    GPU_PATH=$(ls -d /sys/class/devfreq/*mali* 2>/dev/null | head -n 1)
+    [ -n "$GPU_PATH" ] && echo "powersave" > "$GPU_PATH/governor"             
+    run_external_binary "$SCREEN_ON_PATH"     
+    run_external_binary "$WEBVIEW_PATH"    
+    run_external_binary "$CPUSET_NORMAL_PATH"
+    run_external_binary "$NORMAL_PROP_PATH"
+    run_external_binary "$SCRIPT_RUNNER"
+    run_external_binary "$RESOURCES_PATH" 
+    run_external_binary "$TOUCH"
+    run_external_binary "$BYPASS_OFF_PATH"
+    run_external_binary "$VOLTAGE_OFFSET"
+    run_external_binary "$MANUAL_GLOBAL_FILE"   
+    pkill -f lite_gaming
+    pkill -f auto_frequency
+    su -c am broadcast -a com.coloros.phonemanager.action.CLEAN_UP
+    su -c "am broadcast -a com.transsion.phonemaster.action.CLEAN_MEMORY"
+
+    # ── Restore Universal Refresh Rate lock after leaving per-app mode ──
+    UNIVERSAL_RR_FILE="$EXTERNAL_CFG/universal_rr.txt"
+    if [ -f "$UNIVERSAL_RR_FILE" ]; then
+        UNIVERSAL_MODE_ID=$(tr -d '\r\n\t ' < "$UNIVERSAL_RR_FILE")
+        if [ -n "$UNIVERSAL_MODE_ID" ] && [ "$UNIVERSAL_MODE_ID" -eq "$UNIVERSAL_MODE_ID" ] 2>/dev/null; then
+            service call SurfaceFlinger 1035 i32 "$UNIVERSAL_MODE_ID" >/dev/null 2>&1
+            log_msg "🔒 Universal RR restored: mode $UNIVERSAL_MODE_ID"
+        fi
+    fi
+
+    # ── Restore Universal Brightness lock after leaving per-app mode ──
+    UNIVERSAL_BRIGHT_FILE="$EXTERNAL_CFG/universal_brightness.txt"
+    if [ -f "$UNIVERSAL_BRIGHT_FILE" ]; then
+        UB=$(tr -d '\r\n\t ' < "$UNIVERSAL_BRIGHT_FILE")
+        if [ -n "$UB" ] && [ "$UB" -ge 0 ] 2>/dev/null && [ "$UB" -le 255 ] 2>/dev/null; then
+            settings put system screen_brightness_mode 0 2>/dev/null
+            settings put system screen_brightness "$UB" 2>/dev/null
+            log_msg "☀ Universal brightness restored: $UB"
+        fi
+    fi
+
+    # ── Restore Universal Volume lock after leaving per-app mode ──
+    UNIVERSAL_VOL_FILE="$EXTERNAL_CFG/universal_vol.txt"
+    if [ -f "$UNIVERSAL_VOL_FILE" ]; then
+        UV=$(tr -d '\r\n\t ' < "$UNIVERSAL_VOL_FILE")
+        if [ -n "$UV" ] && [ "$UV" -ge 0 ] 2>/dev/null && [ "$UV" -le 100 ] 2>/dev/null; then
+            apply_volume "$UV"
+            log_msg "🔊 Universal volume restored: $UV"
+        fi
+    fi
+
+    # ── Restore Global Saturation after leaving per-app mode ──
+    if [ -n "$_last_sat_pkg" ]; then
+        G_SAT=""
+        [ -f "$GLOBAL_SAT_FILE" ] && G_SAT=$(tr -d '\r\n\t ' < "$GLOBAL_SAT_FILE")
+        if [ -n "$G_SAT" ]; then
+            service call SurfaceFlinger 1022 f "$G_SAT" >/dev/null 2>&1
+            log_msg "🎨 Global saturation restored: ${G_SAT}x (leaving ${_last_sat_pkg})"
+        else
+            service call SurfaceFlinger 1022 f 1.0 >/dev/null 2>&1
+            log_msg "🎨 Saturation reset to 1.0 (no global, leaving ${_last_sat_pkg})"
+        fi
+        _last_sat_pkg=""
+    fi
+
+    CURRENT_MODE="NORMAL"
+}
+#!/system/bin/sh
+
+# State tracking file
+GAME_STATE_FILE="/dev/.davion_engine_active_game"
+NORMAL_STATE_FILE="/dev/.davion_engine_normal_mode"
+CAMERA_STATE_FILE="/dev/.davion_engine_camera_active"
+CPUSET_STATE_FILE="/dev/.davion_engine_cpuset_state"
+# Conn-launch smart switching state files
+_CL_LAST_CONN="/dev/.davion_conn_last"       # last applied conn type (wifi|data|both|"")
+_CL_IDLE_PID="/dev/.davion_conn_idle_pid"    # PID of idle WiFi-off timer
+CONN_IDLE_WIFI_OFF_FILE="/sdcard/GovThermal/config/conn_idle_wifi_off"
+CFG_DIR="/sdcard/GovThermal/config"
+
+# Config paths (Ensure these are defined in your environment or sourced)
+# EXTERNAL_CFG, SCREEN_OFF_PATH, MANUAL_GLOBAL_FILE, WHITELIST_FILE, etc. 
+# must be defined before running this script.
+
+LOGCAT_PID_FILE="/data/adb/modules/GovThermal/logcat_monitor.pid"
+
+# Cleanup old processes
+pkill -f "logcat.*events" 2>/dev/null
+pkill -f "inotifywait" 2>/dev/null
+
+log_msg() {
+    echo "[$(date '+%H:%M:%S')] $1"
+    # Optionally log to file: echo "[$(date '+%H:%M:%S')] $1" >> /data/local/tmp/davion_engine.log
+}
+
+# Function to handle the core logic (extracted for reuse)
+process_log_line() {
+    local line="$1"
+    [ -z "$line" ] && return
+
+    # ➤ SCREEN OFF TRIGGER
+    case "$line" in
+        *"screen_off"*|*"sys_screen_off"*|*"screen_toggled=0"*|*"lcd_power: 0"*|*"power_screen_state: [0,"*)
+            log_msg "🌙 Screen Off Detected."
+            if [ -f "$EXTERNAL_CFG/low_power_mode" ]; then       
+                run_external_binary "$SCREEN_OFF_PATH"                    
+            fi
+            # Turn off battery saver on screen off — deep sleep handles power saving
+            settings put global low_power 0 2>/dev/null
+            # Deep Sleep: lower CPU to hardware minimum when screen off
+            if [ -f "${CFG_DIR}/deep_sleep_enabled" ]; then
+                (
+                    # Save current scaling_max_freq before lowering
+                    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                        [ -d "$POLICY" ] || continue
+                        cur=$(cat "$POLICY/scaling_max_freq" 2>/dev/null)
+                        [ -n "$cur" ] && echo "$cur" > "/dev/.deepsleep_saved_$(basename $POLICY)" 2>/dev/null
+                        hw_min=$(cat "$POLICY/cpuinfo_min_freq" 2>/dev/null)
+                        [ -n "$hw_min" ] && chmod 644 "$POLICY/scaling_max_freq" 2>/dev/null && \
+                            echo "$hw_min" > "$POLICY/scaling_max_freq" 2>/dev/null
+                    done
+                    log_msg "😴 Deep Sleep: CPU throttled to min"
+                ) &
+            fi
+            notify_engine "🌙 Screen Off" "Entering Power Saver Mode"
+            ;;
+    esac
+
+    # ➤ SCREEN ON TRIGGER
+    case "$line" in
+        *"screen_on"*|*"sys_screen_on"*|*"screen_toggled=1"*|*"lcd_power: 1"*|*"power_screen_state: [1,"*)
+            log_msg "☀️ Screen On Detected."
+            # Deep Sleep restore: bring CPU freq back to saved values
+            if [ -f "${CFG_DIR}/deep_sleep_enabled" ]; then
+                (
+                    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                        [ -d "$POLICY" ] || continue
+                        saved="/dev/.deepsleep_saved_$(basename $POLICY)"
+                        if [ -f "$saved" ]; then
+                            freq=$(cat "$saved" 2>/dev/null)
+                            [ -n "$freq" ] && chmod 644 "$POLICY/scaling_max_freq" 2>/dev/null && \
+                                echo "$freq" > "$POLICY/scaling_max_freq" 2>/dev/null
+                            rm -f "$saved"
+                        fi
+                    done
+                    log_msg "☀️ Deep Sleep: CPU freq restored"
+                ) &
+            fi
+            run_external_binary "$MANUAL_GLOBAL_FILE"
+            notify_engine "☀️ Screen On" "Restoring Balanced Performance"
+            ;;
+    esac
+
+    # ➤ SCREEN RECORDING — instant battery guard
+    case "$line" in
+        *"MediaProjection"*|*"VirtualDisplay"*|*"screen_record"*|*"screenrecord"*|*"recording_start"*)
+            if [ -f "${CFG_DIR}/battery_guard_enabled" ]; then
+                (
+                    sv()  { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
+                    svx() { chmod 644 "$1" 2>/dev/null; sv "$1" "$2"; }
+                    # FPSGO off
+                    sv /sys/kernel/fpsgo/common/fpsgo_enable 0
+                    sv /sys/kernel/fpsgo/common/force_onoff 2
+                    sv /sys/kernel/fpsgo/fbt/thrm_enable 0
+                    sv /sys/kernel/fpsgo/common/stop_boost 1
+                    # MTK OC + PPM
+                    svx /proc/mtk_batoc_throttling/battery_oc_protect_stop "stop 1"
+                    svx /proc/mtk_batoc_throttling/battery_oc_protect_level "0"
+                    for i in 0 1 2 3 4 5; do
+                        [ -f "/proc/ppm/policy/$i" ] && echo "0 -1" > "/proc/ppm/policy/$i" 2>/dev/null
+                    done
+                    # Thermal + raise tzcpu to 110C
+                    for zone in /sys/class/thermal/thermal_zone*; do
+                        [ -f "$zone/mode" ] && echo "disabled" > "$zone/mode" 2>/dev/null
+                    done
+                    sv /proc/driver/thermal/tzbattery "1 90000 0 mtktsbattery-sysrst 0 0 no-cooler 0 0 no-cooler 0 0"
+                    sv /proc/driver/thermal/tzcpu "3 110000 0 mtktscpu-sysrst 90000 0 cpu_adaptive_0 82000 0 cpu_adaptive_1 0 0 no-cooler 0 0 no-cooler 0 0"
+                    cmd thermalservice override-status 0 2>/dev/null
+                    chmod 000 /sys/devices/*.mali/throttling1 /sys/devices/*.mali/throttling2 \
+                               /sys/devices/*.mali/throttling3 /sys/devices/*.mali/throttling4 2>/dev/null
+                    # ULPM off
+                    sv /sys/module/mtk_lpm/parameters/ulpm_disable 1
+                    # Battery saver off
+                    settings put global low_power 0 2>/dev/null
+                    settings put global low_power_trigger_level 0 2>/dev/null
+                    # CPU floors
+                    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                        [ -d "$POLICY" ] || continue
+                        MAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+                        [ "$MAX" -gt 0 ] && svx "$POLICY/scaling_min_freq" "$(( MAX / 2 ))"
+                        svx "$POLICY/scaling_max_freq" "$MAX"
+                    done
+                    # schedutil 2000µs (NOT 500 -- 500 causes CPU overhead/thrashing)
+                    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                        [ -d "$POLICY" ] || continue
+                        PMAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+                        for SU in "$POLICY/schedutil" "$POLICY/schedhorizon" "$POLICY/uag"; do
+                            [ -d "$SU" ] && sv "$SU/up_rate_limit_us" "2000" && sv "$SU/down_rate_limit_us" "5000"
+                            [ -d "$SU" ] && [ "$PMAX" -gt 0 ] && sv "$SU/hispeed_freq" "$(( PMAX * 80 / 100 ))"
+                        done
+                    done
+                    # GPU + bypass power limits
+                    for GPU in /sys/class/devfreq/*mali* /sys/class/devfreq/*gpu*; do
+                        [ -d "$GPU" ] || continue
+                        AVAIL=$(cat "$GPU/available_governors" 2>/dev/null)
+                        echo "$AVAIL" | grep -q "simple_ondemand" && echo "simple_ondemand" > "$GPU/governor" 2>/dev/null
+                        GPU_MAX=$(cat "$GPU/max_freq" 2>/dev/null || echo 0)
+                        [ "$GPU_MAX" -gt 0 ] && echo "$GPU_MAX" > "$GPU/max_freq" 2>/dev/null
+                    done
+                    for f in /proc/gpufreqv2/gpufreq_power_limited /proc/gpufreq/gpufreq_power_limited; do
+                        [ -f "$f" ] && {
+                            echo "ignore_thermal_protect 1" > "$f" 2>/dev/null
+                            echo "ignore_pbm_limited 1"     > "$f" 2>/dev/null
+                            echo "ignore_batt_percent 1"    > "$f" 2>/dev/null
+                        }
+                    done
+                    sv /sys/module/ged/parameters/gpu_bottom_freq 500000
+                    # DRAM
+                    sv /sys/devices/platform/boot_dramboost/dramboost/dramboost "1"
+                    # Media RT priority
+                    for proc in mediaserver media.codec android.media; do
+                        for pid in $(pgrep -f "$proc" 2>/dev/null); do
+                            renice -n -10 -p "$pid" 2>/dev/null
+                            chrt -r -p 15 "$pid" 2>/dev/null
+                        done
+                    done
+                    echo "1" > /dev/.davion_batt_guard_state 2>/dev/null
+                    log_msg "🛡️ Instant Battery Guard: screen recording detected"
+                ) &
+            fi
+            ;;
+    esac
+
+    # ➤ APP ACTIVITY RESUME — GAME OR NORMAL MODE
+    case "$line" in        *"input_focus"*|*"wm_on_resume_called"*|*"top_resumed_app_focus"*|*"am_on_resume_called"*|*"monitor_focus_event"*|*"am_resume_activity"*)
+            # Extract package name
+            DETECTED_PKG=$(echo "$line" | grep -oE '[a-zA-Z0-9._]+\/[a-zA-Z0-9._]+' | cut -d'/' -f1 | tail -n 1)
+            if [ -z "$DETECTED_PKG" ]; then
+                DETECTED_PKG=$(echo "$line" | sed -n 's/.* \([^/ ]*\)\/[^/ ]*.*/\1/p' | grep -oE '[a-zA-Z0-9._]' | head -n 1)
+            fi
+
+            # Skip invalid or system packages
+            if [ -z "$DETECTED_PKG" ] || ! echo "$DETECTED_PKG" | grep -q '\.'; then
+                return
+            fi
+
+            # Write foreground pkg immediately for the fast brightness daemon
+            echo "$DETECTED_PKG" > /dev/.davion_last_fg_pkg
+
+            # 🔒 WHITELIST CHECK
+            if [ -f "$WHITELIST_FILE" ] && grep -Fxq "$DETECTED_PKG" "$WHITELIST_FILE" 2>/dev/null; then
+                log_msg "⏭️ Whitelisted app detected: $DETECTED_PKG - Skipping all processing"
+                return
+            fi
+    
+            # 📸 CAMERA DETECTION
+            IS_CAMERA=0
+            case "$DETECTED_PKG" in
+                *camera*|*Camera*|*snapdragon*|*halo*|*opencamera*|*fovcam*|*mediatek.camera*|\
+                com.android.camera|com.sec.android.app.camera|com.google.android.camera|\
+                com.huawei.camera|com.oppo.camera|com.vivo.camera|com.oneplus.camera|\
+                com.sonyericsson.android.camera|com.motorola.camera|com.zte.camera*|\
+                com.transsion.camera)
+                    IS_CAMERA=1
+                    ;;
+            esac
+    
+            if [ "$IS_CAMERA" = 1 ]; then
+                log_msg "📸 Camera detected: $DETECTED_PKG"
+                if [ -f "$LIMITER_FILE" ] && [ ! -f "${LIMITER_FILE}.exec" ]; then                            
+                    mv "$LIMITER_FILE" "${LIMITER_FILE}.exec"
+                    log_msg "✅ Limiter disabled for camera (renamed to .exec)"
+                fi
+                echo "1" > "$CAMERA_STATE_FILE"
+
+                # ── Instant Battery Guard for camera/video call ──
+                if [ -f "$CONN_IDLE_WIFI_OFF_FILE" ] || [ -f "${CFG_DIR}/battery_guard_enabled" ]; then
+                    (
+                        sv()  { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
+                        svx() { chmod 644 "$1" 2>/dev/null; sv "$1" "$2"; }
+                        # FPSGO off
+                        sv /sys/kernel/fpsgo/common/fpsgo_enable 0
+                        sv /sys/kernel/fpsgo/common/force_onoff 2
+                        sv /sys/kernel/fpsgo/fbt/thrm_enable 0
+                        sv /sys/kernel/fpsgo/common/stop_boost 1
+                        # MTK OC + PPM
+                        svx /proc/mtk_batoc_throttling/battery_oc_protect_stop "stop 1"
+                        svx /proc/mtk_batoc_throttling/battery_oc_protect_level "0"
+                        for i in 0 1 2 3 4 5; do
+                            [ -f "/proc/ppm/policy/$i" ] && echo "0 -1" > "/proc/ppm/policy/$i" 2>/dev/null
+                        done
+                        # Thermal
+                        for zone in /sys/class/thermal/thermal_zone*; do
+                            [ -f "$zone/mode" ] && echo "disabled" > "$zone/mode" 2>/dev/null
+                        done
+                        sv /proc/driver/thermal/tzbattery "1 90000 0 mtktsbattery-sysrst 0 0 no-cooler 0 0 no-cooler 0 0"
+                        sv /proc/driver/thermal/tzcpu "3 110000 0 mtktscpu-sysrst 90000 0 cpu_adaptive_0 82000 0 cpu_adaptive_1 0 0 no-cooler 0 0 no-cooler 0 0"
+                        cmd thermalservice override-status 0 2>/dev/null
+                        chmod 000 /sys/devices/*.mali/throttling1 2>/dev/null
+                        chmod 000 /sys/devices/*.mali/throttling2 2>/dev/null
+                        chmod 000 /sys/devices/*.mali/throttling3 2>/dev/null
+                        chmod 000 /sys/devices/*.mali/throttling4 2>/dev/null
+                        # ULPM off
+                        sv /sys/module/mtk_lpm/parameters/ulpm_disable 1
+                        # Battery saver off
+                        settings put global low_power 0 2>/dev/null
+                        settings put global low_power_trigger_level 0 2>/dev/null
+                        # CPU floors + thermal caps
+                        for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                            [ -d "$POLICY" ] || continue
+                            MAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+                            [ "$MAX" -gt 0 ] && svx "$POLICY/scaling_min_freq" "$(( MAX / 2 ))"
+                            svx "$POLICY/scaling_max_freq" "$MAX"
+                        done
+                        [ -f /sys/devices/virtual/thermal/thermal_message/cpu_limits ] && \
+                            for i in 0 4 7; do echo "cpu$i 9999999" > /sys/devices/virtual/thermal/thermal_message/cpu_limits 2>/dev/null; done
+                        # schedutil rate_limit_us=2000 (NOT 500 - causes CPU overhead)
+                        for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                            [ -d "$POLICY" ] || continue
+                            PMAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+                            for SU in "$POLICY/schedutil" "$POLICY/schedhorizon" "$POLICY/uag"; do
+                                [ -d "$SU" ] && sv "$SU/up_rate_limit_us" "2000" && sv "$SU/down_rate_limit_us" "5000"
+                                [ -d "$SU" ] && [ "$PMAX" -gt 0 ] && sv "$SU/hispeed_freq" "$(( PMAX * 80 / 100 ))"
+                            done
+                        done
+                        # GPU + power bypass
+                        for GPU in /sys/class/devfreq/*mali* /sys/class/devfreq/*gpu*; do
+                            [ -d "$GPU" ] || continue
+                            AVAIL=$(cat "$GPU/available_governors" 2>/dev/null)
+                            echo "$AVAIL" | grep -q "simple_ondemand" && echo "simple_ondemand" > "$GPU/governor" 2>/dev/null
+                            GPU_MAX=$(cat "$GPU/max_freq" 2>/dev/null || echo 0)
+                            [ "$GPU_MAX" -gt 0 ] && echo "$GPU_MAX" > "$GPU/max_freq" 2>/dev/null
+                        done
+                        for f in /proc/gpufreqv2/gpufreq_power_limited /proc/gpufreq/gpufreq_power_limited; do
+                            [ -f "$f" ] && {
+                                echo "ignore_thermal_protect 1" > "$f" 2>/dev/null
+                                echo "ignore_pbm_limited 1"     > "$f" 2>/dev/null
+                                echo "ignore_batt_percent 1"    > "$f" 2>/dev/null
+                            }
+                        done
+                        sv /sys/module/ged/parameters/gpu_bottom_freq 500000
+                        # DRAM
+                        sv /sys/devices/platform/boot_dramboost/dramboost/dramboost "1"
+                        # Media RT priority
+                        for proc in mediaserver media.codec android.media; do
+                            for pid in $(pgrep -f "$proc" 2>/dev/null); do
+                                renice -n -10 -p "$pid" 2>/dev/null
+                                chrt -r -p 15 "$pid" 2>/dev/null
+                            done
+                        done
+                        echo "1" > /dev/.davion_batt_guard_state 2>/dev/null
+                        log_msg "🛡️ Instant Battery Guard: camera/video call active"
+                    ) &
+                fi
+                
+                # Apply per-app RR for camera if configured
+                REFRESH_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.mode"
+                if [ -f "$REFRESH_FILE" ]; then
+                    MODE_ID=$(tr -d '\r\n\t ' < "$REFRESH_FILE")
+                    if [ -n "$MODE_ID" ] && [ "$MODE_ID" -eq "$MODE_ID" ] 2>/dev/null; then
+                        service call SurfaceFlinger 1035 i32 "$MODE_ID" >/dev/null 2>&1
+                        log_msg "🖥️ Refresh Rate (camera): mode $MODE_ID → $DETECTED_PKG"
+                    fi
+                fi
+
+                # Restore brightness for camera (per-app or universal)
+                CAM_BRIGHT_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.bright"
+                UNIVERSAL_BRIGHT_FILE="$EXTERNAL_CFG/universal_brightness.txt"
+                if [ -f "$CAM_BRIGHT_FILE" ]; then
+                    CB=$(tr -d '\r\n\t ' < "$CAM_BRIGHT_FILE")
+                    if [ -n "$CB" ] && [ "$CB" -ge 0 ] 2>/dev/null && [ "$CB" -le 255 ] 2>/dev/null; then
+                        settings put system screen_brightness_mode 0 2>/dev/null
+                        settings put system screen_brightness "$CB" 2>/dev/null
+                        log_msg "☀ Brightness: $CB → $DETECTED_PKG (camera)"
+                    fi
+                elif [ -f "$UNIVERSAL_BRIGHT_FILE" ]; then
+                    UB=$(tr -d '\r\n\t ' < "$UNIVERSAL_BRIGHT_FILE")
+                    if [ -n "$UB" ] && [ "$UB" -ge 0 ] 2>/dev/null && [ "$UB" -le 255 ] 2>/dev/null; then
+                        settings put system screen_brightness_mode 0 2>/dev/null
+                        settings put system screen_brightness "$UB" 2>/dev/null
+                        log_msg "☀ Universal brightness restored (camera): $UB"
+                    fi
+                fi
+
+                # Per-app volume for camera
+                CAM_VOL_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.vol"
+                UNIVERSAL_VOL_FILE="$EXTERNAL_CFG/universal_vol.txt"
+                if [ -f "$CAM_VOL_FILE" ]; then
+                    CV=$(tr -d '\r\n\t ' < "$CAM_VOL_FILE")
+                    if [ -n "$CV" ] && [ "$CV" -ge 0 ] 2>/dev/null && [ "$CV" -le 100 ] 2>/dev/null; then
+                        apply_volume "$CV"
+                        log_msg "🔊 Volume: $CV → $DETECTED_PKG (camera)"
+                    fi
+                elif [ -f "$UNIVERSAL_VOL_FILE" ]; then
+                    UV=$(tr -d '\r\n\t ' < "$UNIVERSAL_VOL_FILE")
+                    if [ -n "$UV" ] && [ "$UV" -ge 0 ] 2>/dev/null && [ "$UV" -le 100 ] 2>/dev/null; then
+                        apply_volume "$UV"
+                        log_msg "🔊 Universal volume restored (camera): $UV"
+                    fi
+                fi
+
+                apply_non_gaming_logic
+                enable_zram
+                rm -f "$GAME_STATE_FILE"
+                return
+            fi
+            
+            case "$DETECTED_PKG" in
+                *launcher*|*systemui*|*settings*|*google*|*transsion*|*recents*|*recenttasks*|*overview*|*nexuslauncher*|android)
+                if [ -f "$CAMERA_STATE_FILE" ]; then
+                    log_msg "🚪 Exiting camera app"
+                    if [ -f "${LIMITER_FILE}.exec" ] && [ ! -f "$LIMITER_FILE" ]; then
+                        mv "${LIMITER_FILE}.exec" "$LIMITER_FILE"
+                        log_msg "✅ Limiter re-enabled after camera exit"
+                    fi                    
+                    rm -f "$CAMERA_STATE_FILE"
+                fi
+                    # Apply per-app RR even for system apps before switching to normal mode
+                    REFRESH_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.mode"
+                    if [ -f "$REFRESH_FILE" ]; then
+                        MODE_ID=$(tr -d '\r\n\t ' < "$REFRESH_FILE")
+                        if [ -n "$MODE_ID" ] && [ "$MODE_ID" -eq "$MODE_ID" ] 2>/dev/null; then
+                            service call SurfaceFlinger 1035 i32 "$MODE_ID" >/dev/null 2>&1
+                            log_msg "🖥️ Refresh Rate (system app): mode $MODE_ID → $DETECTED_PKG"
+                        fi
+                    else
+                        # No per-app RR: restore universal RR if set
+                        UNIVERSAL_RR_FILE="$EXTERNAL_CFG/universal_rr.txt"
+                        if [ -f "$UNIVERSAL_RR_FILE" ]; then
+                            UNIVERSAL_MODE_ID=$(tr -d '\r\n\t ' < "$UNIVERSAL_RR_FILE")
+                            if [ -n "$UNIVERSAL_MODE_ID" ] && [ "$UNIVERSAL_MODE_ID" -eq "$UNIVERSAL_MODE_ID" ] 2>/dev/null; then
+                                service call SurfaceFlinger 1035 i32 "$UNIVERSAL_MODE_ID" >/dev/null 2>&1
+                                log_msg "🔒 Universal RR restored for system app: mode $UNIVERSAL_MODE_ID"
+                            fi
+                        fi
+                    fi
+                    # Restore per-app OR universal brightness for system/launcher
+                    SYS_BRIGHT_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.bright"
+                    UNIVERSAL_BRIGHT_FILE="$EXTERNAL_CFG/universal_brightness.txt"
+                    if [ -f "$SYS_BRIGHT_FILE" ]; then
+                        SB=$(tr -d '\r\n\t ' < "$SYS_BRIGHT_FILE")
+                        if [ -n "$SB" ] && [ "$SB" -ge 0 ] 2>/dev/null && [ "$SB" -le 255 ] 2>/dev/null; then
+                            settings put system screen_brightness_mode 0 2>/dev/null
+                            settings put system screen_brightness "$SB" 2>/dev/null
+                            log_msg "☀ Brightness: $SB → $DETECTED_PKG"
+                        fi
+                    elif [ -f "$UNIVERSAL_BRIGHT_FILE" ]; then
+                        UB=$(tr -d '\r\n\t ' < "$UNIVERSAL_BRIGHT_FILE")
+                        if [ -n "$UB" ] && [ "$UB" -ge 0 ] 2>/dev/null && [ "$UB" -le 255 ] 2>/dev/null; then
+                            settings put system screen_brightness_mode 0 2>/dev/null
+                            settings put system screen_brightness "$UB" 2>/dev/null
+                            log_msg "☀ Universal brightness restored (system app): $UB"
+                        fi
+                    fi
+                    # Per-app volume for system/launcher
+                    SYS_VOL_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.vol"
+                    UNIVERSAL_VOL_FILE="$EXTERNAL_CFG/universal_vol.txt"
+                    if [ -f "$SYS_VOL_FILE" ]; then
+                        SVL=$(tr -d '\r\n\t ' < "$SYS_VOL_FILE")
+                        if [ -n "$SVL" ] && [ "$SVL" -ge 0 ] 2>/dev/null && [ "$SVL" -le 100 ] 2>/dev/null; then
+                            apply_volume "$SVL"
+                            log_msg "🔊 Volume: $SVL → $DETECTED_PKG"
+                        fi
+                    elif [ -f "$UNIVERSAL_VOL_FILE" ]; then
+                        UV=$(tr -d '\r\n\t ' < "$UNIVERSAL_VOL_FILE")
+                        if [ -n "$UV" ] && [ "$UV" -ge 0 ] 2>/dev/null && [ "$UV" -le 100 ] 2>/dev/null; then
+                            apply_volume "$UV"
+                            log_msg "🔊 Universal volume restored (system app): $UV"
+                        fi
+                    fi
+                    # Per-app Connection on Launch for system/launcher
+                    SYS_CONN_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.conn"
+                    SYS_LEGACY_WIFI="$REFRESH_LOCK_DIR/${DETECTED_PKG}.wifi"
+                    if [ -f "$SYS_CONN_FILE" ]; then
+                        SYS_CONN_VAL=$(tr -d '\r\n\t ' < "$SYS_CONN_FILE")
+                        apply_conn_launch "$DETECTED_PKG" "$SYS_CONN_VAL"
+                    elif [ -f "$SYS_LEGACY_WIFI" ]; then
+                        apply_conn_launch "$DETECTED_PKG" "wifi"
+                    else
+                        # Returning to homescreen/systemui — start idle conn-off timer
+                        start_idle_conn_timer
+                    fi
+                    # Restore global saturation when returning to launcher/system
+                    SYS_SAT_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.sat"
+                    if [ -f "$SYS_SAT_FILE" ]; then
+                        SYS_SAT_RAW=$(tr -d '\r\n\t ' < "$SYS_SAT_FILE")
+                        if [ -n "$SYS_SAT_RAW" ] && [ "$SYS_SAT_RAW" -ge 0 ] 2>/dev/null && [ "$SYS_SAT_RAW" -le 20 ] 2>/dev/null; then
+                            SYS_SAT_VAL=$(awk -v raw="$SYS_SAT_RAW" 'BEGIN{printf "%.1f", raw / 10}')
+                            service call SurfaceFlinger 1022 f "$SYS_SAT_VAL" >/dev/null 2>&1
+                            _last_sat_pkg="$DETECTED_PKG"
+                            log_msg "🎨 Per-app saturation: ${SYS_SAT_VAL}x → $DETECTED_PKG"
+                        fi
+                    elif [ -n "$_last_sat_pkg" ]; then
+                        # Coming from a per-app sat app — restore global
+                        G_SAT=""
+                        [ -f "$GLOBAL_SAT_FILE" ] && G_SAT=$(tr -d '\r\n\t ' < "$GLOBAL_SAT_FILE")
+                        if [ -n "$G_SAT" ]; then
+                            service call SurfaceFlinger 1022 f "$G_SAT" >/dev/null 2>&1
+                            log_msg "🎨 Global saturation restored: ${G_SAT}x (leaving ${_last_sat_pkg})"
+                        else
+                            service call SurfaceFlinger 1022 f 1.0 >/dev/null 2>&1
+                            log_msg "🎨 Saturation reset to 1.0 (no global, leaving ${_last_sat_pkg})"
+                        fi
+                        _last_sat_pkg=""
+                    fi
+                    apply_non_gaming_logic
+                    enable_zram
+                    rm -f "$GAME_STATE_FILE"
+                    # Battery Saver: restore universal when going to launcher/system
+                    # (launcher is not a spared app, so battery saver should be ON)
+                    if [ -f "$BATT_SAVER_FLAG" ]; then
+                        settings put global low_power 1 2>/dev/null
+                        log_msg "🔋 Battery Saver ON (launcher/system)"
+                    fi
+                    return
+                    ;;
+            esac
+
+            # Check if it's a game
+            if [ -f "$GAME_LIST_FILE" ] && grep -Fxq "$DETECTED_PKG" "$GAME_LIST_FILE"; then
+                # 🎮 GAME MODE
+                if [ -f "$GAME_STATE_FILE" ]; then
+                    ACTIVE_GAME=$(cat "$GAME_STATE_FILE" 2>/dev/null)
+                    if [ "$ACTIVE_GAME" = "$DETECTED_PKG" ]; then
+                        return
+                    fi
+                fi
+               
+                echo "$DETECTED_PKG" > "$GAME_STATE_FILE"
+                rm -f "$NORMAL_STATE_FILE"
+                apply_gaming_logic "$DETECTED_PKG"
+                log_msg "🎮 Gaming mode triggered for: $DETECTED_PKG"
+                # Games always disable battery saver — they need full CPU
+                [ -f "$BATT_SAVER_FLAG" ] && settings put global low_power 0 2>/dev/null
+                notify_engine "🎮 Gaming mode" "Target: $DETECTED_PKG"
+                
+                # 🧠 APPLY CPUSETS
+                CPUSET_RULES="/sdcard/DAVION_ENGINE/gaming_cpuset_rules.json"
+                if [ -f "$CPUSET_RULES" ]; then
+                    CURRENT_STATE="$DETECTED_PKG:$(md5sum "$CPUSET_RULES" 2>/dev/null | cut -d' ' -f1)"
+                    LAST_STATE=$(cat "$CPUSET_STATE_FILE" 2>/dev/null)
+    
+                    if [ "$CURRENT_STATE" != "$LAST_STATE" ]; then
+                        log_msg "🧠 Applying cpusets (jq-free)..."
+                        echo "0-7" > /dev/cpuset/top-app/cpus 2>/dev/null
+
+                        QUOTED=$(grep -o '"[^"]*"' "$CPUSET_RULES" 2>/dev/null | tr -d '"')
+                        set -- $QUOTED
+
+                        while [ $# -ge 2 ]; do
+                            pkg="$1"
+                            cpuset="$2"
+                            shift 2
+
+                            case "$cpuset" in
+                                background|system-background|top-app) ;;
+                                *) continue ;;
+                            esac
+
+                            case "$pkg" in
+                                android|com.android.systemui|com.android.phone|com.android.shell|com.topjohnwu.magisk|io.github.kernelsu.manager|logcat|dumpsys2|sh)                                    continue
+                                    ;;
+                            esac
+
+                            if [ "$pkg" = "$DETECTED_PKG" ]; then
+                                continue
+                            fi
+
+                            for pid in $(pidof "$pkg" 2>/dev/null); do
+                                if [ -n "$pid" ] && [ -w "/dev/cpuset/$cpuset/cgroup.procs" ]; then
+                                    echo "$pid" > "/dev/cpuset/$cpuset/cgroup.procs" 2>/dev/null
+                                    log_msg "→ $pkg ($pid) → $cpuset"
+                                fi
+                            done
+                        done
+
+                        echo "$CURRENT_STATE" > "$CPUSET_STATE_FILE"
+                        log_msg "✅ Cpuset assignment completed!"
+                    else
+                        log_msg "ℹ️ Cpusets already applied — skipping"
+                    fi
+                fi
+                
+                # 🍃 LITE GAMING
+                if [ -f "$EXTERNAL_CFG/enable_lite_gaming" ] && [ -f "$LITE_GAMING_PATH" ]; then
+                    log_msg "🍃 Lite Gaming triggered for: $DETECTED_PKG"
+                    run_external_binary "$LITE_GAMING_PATH"
+                    notify_engine "🍃 Lite Gaming Mode" "Target: $DETECTED_PKG"
+                fi
+                
+                # 🎯 PER-APP AUTO-TUNING TRIGGER
+                PER_APP_DIR="/sdcard/DAVION_ENGINE/per_app"
+                VSYNC_DIR="/sdcard/DAVION_ENGINE/vsync_configs"
+                RENDERER_DIR="/sdcard/DAVION_ENGINE/threading_configs"
+                PKG="$DETECTED_PKG"
+                : ${BASE_DENSITY:=480}
+
+                # --- 1. RESOLUTION SCALING ---
+                SCALE_FILE="$PER_APP_DIR/${PKG}.scale"
+                if [ -f "$SCALE_FILE" ]; then
+                    SCALE_PCT=$(tr -d '\r\n\t ' < "$SCALE_FILE")
+                    if [ -n "$SCALE_PCT" ] && [ "$SCALE_PCT" -eq "$SCALE_PCT" ] 2>/dev/null; then
+                        NEW_DENSITY=$(( (BASE_DENSITY * SCALE_PCT) / 100 ))
+                        wm density "$NEW_DENSITY" 2>/dev/null && log_msg "📱 Scaling: ${SCALE_PCT}% → $PKG"
+                    fi
+                fi
+
+                # --- 2. CPU GOVERNOR ---
+                GOV_FILE="$PER_APP_DIR/${PKG}.governor"                
+                if [ -f "$GOV_FILE" ]; then
+                    GOVERNOR=$(tr -d '\r\n\t ' < "$GOV_FILE")
+                    if [ -n "$GOVERNOR" ]; then
+                        for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+                            gov_path="$cpu/cpufreq/scaling_governor"
+                            [ -w "$gov_path" ] && echo "$GOVERNOR" > "$gov_path" 2>/dev/null
+                        done
+                        log_msg "⚡ Governor: $GOVERNOR → $PKG"
+                    fi
+                fi
+
+                # --- 3. RENDERER ---
+                RENDERER_FILE="$RENDERER_DIR/${PKG}.conf"
+                if [ -f "$RENDERER_FILE" ]; then
+                    RENDERER=$(tr -d '\r\n\t ' < "$RENDERER_FILE")
+                    case "$RENDERER" in
+                        skiavk|skiagl)
+                            setprop debug.hwui.renderer "$RENDERER" 2>/dev/null
+                            log_msg "🎨 Renderer: $RENDERER → $PKG"
+                            ;;
+                    esac
+                fi
+
+                # --- 4. VSYNC ---
+                VSYNC_FILE="$VSYNC_DIR/${PKG}.vsync"
+                if [ -f "$VSYNC_FILE" ]; then
+                    VSYNC_NS=$(tr -d '\r\n\t ' < "$VSYNC_FILE")
+                    if [ -n "$VSYNC_NS" ] && [ "$VSYNC_NS" -eq "$VSYNC_NS" ] 2>/dev/null; then
+                        setprop debug.sf.early_phase_offset_ns "$VSYNC_NS"
+                        setprop debug.sf.early_gl_phase_offset_ns "$VSYNC_NS"
+                        setprop debug.sf.high_fps_early_phase_offset_ns "$VSYNC_NS"
+                        setprop debug.sf.high_fps_early_gl_phase_offset_ns "$VSYNC_NS"
+                        setprop debug.sf.high_fps_late_app_phase_offset_ns "$VSYNC_NS"
+                        log_msg "⏱️ VSync: ${VSYNC_NS}ns → $PKG"
+                    fi
+                fi
+
+                # --- 5. REFRESH RATE ---
+                REFRESH_FILE="$REFRESH_LOCK_DIR/${PKG}.mode"
+                UNIVERSAL_RR_FILE="$EXTERNAL_CFG/universal_rr.txt"
+                if [ -f "$REFRESH_FILE" ]; then
+                    MODE_ID=$(tr -d '\r\n\t ' < "$REFRESH_FILE")
+                    if [ -n "$MODE_ID" ] && [ "$MODE_ID" -eq "$MODE_ID" ] 2>/dev/null; then
+                        service call SurfaceFlinger 1035 i32 "$MODE_ID" >/dev/null 2>&1 && log_msg "🖥️ Refresh Rate: mode $MODE_ID → $PKG"
+                    fi
+                elif [ -f "$UNIVERSAL_RR_FILE" ]; then
+                    # No per-app RR (Disabled): restore universal RR if set, else keep current
+                    UNIVERSAL_MODE_ID=$(tr -d '\r\n\t ' < "$UNIVERSAL_RR_FILE")
+                    if [ -n "$UNIVERSAL_MODE_ID" ] && [ "$UNIVERSAL_MODE_ID" -eq "$UNIVERSAL_MODE_ID" ] 2>/dev/null; then
+                        service call SurfaceFlinger 1035 i32 "$UNIVERSAL_MODE_ID" >/dev/null 2>&1
+                        log_msg "🔒 Universal RR restored (gaming): mode $UNIVERSAL_MODE_ID"
+                    fi
+                else
+                    # No per-app and no universal: reset to auto
+                    service call SurfaceFlinger 1035 i32 0 >/dev/null 2>&1
+                    log_msg "🖥️ Refresh Rate: reset to auto (mode 0) → $PKG"
+                fi
+
+                # --- 5b. PER-APP BRIGHTNESS ---
+                BRIGHT_FILE="$REFRESH_LOCK_DIR/${PKG}.bright"
+                UNIVERSAL_BRIGHT_FILE="$EXTERNAL_CFG/universal_brightness.txt"
+                if [ -f "$BRIGHT_FILE" ]; then
+                    BRIGHT_VAL=$(tr -d '\r\n\t ' < "$BRIGHT_FILE")
+                    if [ -n "$BRIGHT_VAL" ] && [ "$BRIGHT_VAL" -ge 0 ] 2>/dev/null && [ "$BRIGHT_VAL" -le 255 ] 2>/dev/null; then
+                        settings put system screen_brightness_mode 0 2>/dev/null
+                        settings put system screen_brightness "$BRIGHT_VAL" 2>/dev/null
+                        log_msg "☀ Brightness: $BRIGHT_VAL → $PKG"
+                    fi
+                elif [ -f "$UNIVERSAL_BRIGHT_FILE" ]; then
+                    UB=$(tr -d '\r\n\t ' < "$UNIVERSAL_BRIGHT_FILE")
+                    if [ -n "$UB" ] && [ "$UB" -ge 0 ] 2>/dev/null && [ "$UB" -le 255 ] 2>/dev/null; then
+                        settings put system screen_brightness_mode 0 2>/dev/null
+                        settings put system screen_brightness "$UB" 2>/dev/null
+                        log_msg "☀ Universal brightness restored: $UB"
+                    fi
+                fi
+
+                # --- 5c. PER-APP VOLUME ---
+                VOL_FILE="$REFRESH_LOCK_DIR/${PKG}.vol"
+                UNIVERSAL_VOL_FILE="$EXTERNAL_CFG/universal_vol.txt"
+                if [ -f "$VOL_FILE" ]; then
+                    VOL_VAL=$(tr -d '\r\n\t ' < "$VOL_FILE")
+                    if [ -n "$VOL_VAL" ] && [ "$VOL_VAL" -ge 0 ] 2>/dev/null && [ "$VOL_VAL" -le 100 ] 2>/dev/null; then
+                        apply_volume "$VOL_VAL"
+                        log_msg "🔊 Volume: $VOL_VAL → $PKG"
+                    fi
+                elif [ -f "$UNIVERSAL_VOL_FILE" ]; then
+                    UV=$(tr -d '\r\n\t ' < "$UNIVERSAL_VOL_FILE")
+                    if [ -n "$UV" ] && [ "$UV" -ge 0 ] 2>/dev/null && [ "$UV" -le 100 ] 2>/dev/null; then
+                        apply_volume "$UV"
+                        log_msg "🔊 Universal volume restored: $UV"
+                    fi
+                fi
+
+                # --- 5c2. PER-APP SATURATION ---
+                SAT_FILE="$REFRESH_LOCK_DIR/${PKG}.sat"
+                if [ -f "$SAT_FILE" ]; then
+                    SAT_RAW=$(tr -d '\r\n\t ' < "$SAT_FILE")
+                    if [ -n "$SAT_RAW" ] && [ "$SAT_RAW" -ge 0 ] 2>/dev/null && [ "$SAT_RAW" -le 20 ] 2>/dev/null; then
+                        SAT_VAL=$(awk -v raw="$SAT_RAW" 'BEGIN{printf "%.1f", raw / 10}')
+                        service call SurfaceFlinger 1022 f "$SAT_VAL" >/dev/null 2>&1
+                        _last_sat_pkg="$PKG"
+                        log_msg "🎨 Per-app saturation: ${SAT_VAL}x → $PKG"
+                    fi
+                elif [ -n "$_last_sat_pkg" ] && [ "$_last_sat_pkg" != "$PKG" ]; then
+                    G_SAT=""
+                    [ -f "$GLOBAL_SAT_FILE" ] && G_SAT=$(tr -d '\r\n\t ' < "$GLOBAL_SAT_FILE")
+                    if [ -n "$G_SAT" ]; then
+                        service call SurfaceFlinger 1022 f "$G_SAT" >/dev/null 2>&1
+                        log_msg "🎨 Global saturation restored: ${G_SAT}x (leaving ${_last_sat_pkg})"
+                    else
+                        service call SurfaceFlinger 1022 f 1.0 >/dev/null 2>&1
+                        log_msg "🎨 Saturation reset to 1.0 (no global, leaving ${_last_sat_pkg})"
+                    fi
+                    _last_sat_pkg=""
+                fi
+
+                # --- 5d. PER-APP CONNECTION ON LAUNCH ---
+                CONN_FILE="$REFRESH_LOCK_DIR/${PKG}.conn"
+                LEGACY_WIFI_FILE="$REFRESH_LOCK_DIR/${PKG}.wifi"
+                if [ -f "$CONN_FILE" ]; then
+                    CONN_VAL=$(tr -d '\r\n\t ' < "$CONN_FILE")
+                    apply_conn_launch "$PKG" "$CONN_VAL"
+                elif [ -f "$LEGACY_WIFI_FILE" ]; then
+                    apply_conn_launch "$PKG" "wifi"
+                fi
+
+                # --- 5e. KILL OTHERS ON LAUNCH ---
+                KILL_FILE="$REFRESH_LOCK_DIR/${PKG}.killothers"
+                if [ -f "$KILL_FILE" ]; then
+                    apply_killothers "$PKG"
+                fi
+
+                # --- 5f. GAMING BATTERY GUARD ---
+                BG_FILE="$REFRESH_LOCK_DIR/${PKG}.batt_guard"
+                if [ -f "$BG_FILE" ] && [ -f "$MOD_DIR/script_runner/battery_guard" ]; then
+                    # Force-apply guard tweaks immediately (no threshold check)
+                    log_msg "🛡️ Gaming Battery Guard: activating for $PKG"
+                    (
+                        sv()  { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
+                        svx() { chmod 644 "$1" 2>/dev/null; sv "$1" "$2"; }
+                        # PPM
+                        for i in 0 1 2 3 4 5; do
+                            [ -f "/proc/ppm/policy/$i" ] && echo "0 -1" > "/proc/ppm/policy/$i" 2>/dev/null
+                        done
+                        # MTK OC throttle
+                        svx /proc/mtk_batoc_throttling/battery_oc_protect_stop "stop 1"
+                        svx /proc/mtk_batoc_throttling/battery_oc_protect_level "0"
+                        # Battery saver off
+                        settings put global low_power 0 2>/dev/null
+                        settings put global low_power_trigger_level 0 2>/dev/null
+                        # CPU min_freq floor 50%
+                        for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                            [ -d "$POLICY" ] || continue
+                            MAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+                            [ "$MAX" -le 0 ] && continue
+                            FLOOR=$(( MAX / 2 ))
+                            svx "$POLICY/scaling_min_freq" "$FLOOR"
+                            svx "$POLICY/scaling_max_freq" "$MAX"
+                        done
+                        # schedutil fast ramp
+                        for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                            [ -d "$POLICY" ] || continue
+                            for SU in "$POLICY/schedutil" "$POLICY/schedhorizon" "$POLICY/uag"; do
+                                [ -d "$SU" ] && sv "$SU/up_rate_limit_us" "2000" && sv "$SU/down_rate_limit_us" "5000"
+                            done
+                        done
+                        # schedtune boost
+                        sv /dev/stune/top-app/schedtune.boost "30"
+                        sv /dev/stune/top-app/schedtune.sched_boost_enabled "1"
+                        # GPU simple_ondemand
+                        for GPU in /sys/class/devfreq/*mali* /sys/class/devfreq/*gpu*; do
+                            [ -d "$GPU" ] && AVAIL=$(cat "$GPU/available_governors" 2>/dev/null)
+                            if echo "$AVAIL" | grep -q "simple_ondemand"; then
+                                echo "simple_ondemand" > "$GPU/governor" 2>/dev/null
+                            fi
+                        done
+                        # DRAM boost
+                        sv /sys/devices/platform/boot_dramboost/dramboost/dramboost "1"
+                        echo "1" > /dev/.davion_batt_guard_state 2>/dev/null
+                    ) &
+                    echo "1" > /dev/.davion_batt_guard_app_active 2>/dev/null
+                fi
+
+                # --- 6. EEM VOLTAGE OFFSET ---
+                EEM_FILE="$PER_APP_DIR/${PKG}.eem_offset"
+                if [ -f "$EEM_FILE" ]; then
+                    EEM_OFFSET=$(tr -d '\r\n\t ' < "$EEM_FILE")  
+                                      if [ -n "$EEM_OFFSET" ] && [ "$EEM_OFFSET" -eq "$EEM_OFFSET" ] 2>/dev/null; then
+                        for eem_path in \
+                            /proc/eem/EEM_DET_B/eem_offset \
+                            /proc/eem/EEM_DET_L/eem_offset \
+                            /proc/eem/EEM_DET_CCI/eem_offset \
+                            /proc/eem/EEM_DET_BL/eem_offset \
+                            /proc/eemg/EEMG_DET_GPU/eemg_offset \
+                            /proc/eemg/EEMG_DET_GPU_HI/eemg_offset; do
+                             if [ -f "$eem_path" ]; then
+                                echo "$EEM_OFFSET" > "$eem_path" 2>/dev/null && log_msg "⚡ EEM Offset: ${EEM_OFFSET} → $PKG"
+                             fi
+                        done
+                    fi
+                fi            
+                
+                if [ -f "$EXTERNAL_CFG/disable_zram" ]; then 
+                    disable_zram
+                else
+                    enable_zram
+                fi               
+            else
+                # 🔋 NORMAL MODE
+                if [ -f "$CAMERA_STATE_FILE" ]; then
+                    log_msg "🚪 Exiting camera app"
+                    if [ -f "${LIMITER_FILE}.exec" ] && [ ! -f "$LIMITER_FILE" ]; then
+                        mv "${LIMITER_FILE}.exec" "$LIMITER_FILE"
+                        log_msg "✅ Limiter re-enabled after camera exit"
+                    fi
+                    rm -f "$CAMERA_STATE_FILE"
+                fi
+                    # Apply per-app RR for non-game apps too
+                    REFRESH_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.mode"
+                    if [ -f "$REFRESH_FILE" ]; then
+                        MODE_ID=$(tr -d '\r\n\t ' < "$REFRESH_FILE")
+                        if [ -n "$MODE_ID" ] && [ "$MODE_ID" -eq "$MODE_ID" ] 2>/dev/null; then
+                            service call SurfaceFlinger 1035 i32 "$MODE_ID" >/dev/null 2>&1
+                            log_msg "🖥️ Refresh Rate (normal app): mode $MODE_ID → $DETECTED_PKG"
+                        fi
+                    else
+                        UNIVERSAL_RR_FILE="$EXTERNAL_CFG/universal_rr.txt"
+                        if [ -f "$UNIVERSAL_RR_FILE" ]; then
+                            UNIVERSAL_MODE_ID=$(tr -d '\r\n\t ' < "$UNIVERSAL_RR_FILE")
+                            if [ -n "$UNIVERSAL_MODE_ID" ] && [ "$UNIVERSAL_MODE_ID" -eq "$UNIVERSAL_MODE_ID" ] 2>/dev/null; then
+                                service call SurfaceFlinger 1035 i32 "$UNIVERSAL_MODE_ID" >/dev/null 2>&1
+                                log_msg "🔒 Universal RR restored: mode $UNIVERSAL_MODE_ID"
+                            fi
+                        fi
+                    fi
+                    # Per-app brightness for normal apps
+                    NB_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.bright"
+                    UNIVERSAL_BRIGHT_FILE="$EXTERNAL_CFG/universal_brightness.txt"
+                    if [ -f "$NB_FILE" ]; then
+                        NB_VAL=$(tr -d '\r\n\t ' < "$NB_FILE")
+                        if [ -n "$NB_VAL" ] && [ "$NB_VAL" -ge 0 ] 2>/dev/null && [ "$NB_VAL" -le 255 ] 2>/dev/null; then
+                            settings put system screen_brightness_mode 0 2>/dev/null
+                            settings put system screen_brightness "$NB_VAL" 2>/dev/null
+                            log_msg "☀ Brightness: $NB_VAL → $DETECTED_PKG"
+                        fi
+                    elif [ -f "$UNIVERSAL_BRIGHT_FILE" ]; then
+                        UB=$(tr -d '\r\n\t ' < "$UNIVERSAL_BRIGHT_FILE")
+                        if [ -n "$UB" ] && [ "$UB" -ge 0 ] 2>/dev/null && [ "$UB" -le 255 ] 2>/dev/null; then
+                            settings put system screen_brightness_mode 0 2>/dev/null
+                            settings put system screen_brightness "$UB" 2>/dev/null
+                            log_msg "☀ Universal brightness restored: $UB"
+                        fi
+                    fi
+                    # Per-app volume for normal apps
+                    NV_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.vol"
+                    UNIVERSAL_VOL_FILE="$EXTERNAL_CFG/universal_vol.txt"
+                    if [ -f "$NV_FILE" ]; then
+                        NV_VAL=$(tr -d '\r\n\t ' < "$NV_FILE")
+                        if [ -n "$NV_VAL" ] && [ "$NV_VAL" -ge 0 ] 2>/dev/null && [ "$NV_VAL" -le 100 ] 2>/dev/null; then
+                            apply_volume "$NV_VAL"
+                            log_msg "🔊 Volume: $NV_VAL → $DETECTED_PKG"
+                        fi
+                    elif [ -f "$UNIVERSAL_VOL_FILE" ]; then
+                        UV=$(tr -d '\r\n\t ' < "$UNIVERSAL_VOL_FILE")
+                        if [ -n "$UV" ] && [ "$UV" -ge 0 ] 2>/dev/null && [ "$UV" -le 100 ] 2>/dev/null; then
+                            apply_volume "$UV"
+                            log_msg "🔊 Universal volume restored: $UV"
+                        fi
+                    fi
+                    # Per-app Connection on Launch for normal apps (fast, non-blocking)
+                    NW_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.conn"
+                    NW_LEGACY="$REFRESH_LOCK_DIR/${DETECTED_PKG}.wifi"
+                    if [ -f "$NW_FILE" ]; then
+                        NW_VAL=$(tr -d '\r\n\t ' < "$NW_FILE")
+                        apply_conn_launch "$DETECTED_PKG" "$NW_VAL"
+                    elif [ -f "$NW_LEGACY" ]; then
+                        apply_conn_launch "$DETECTED_PKG" "wifi"
+                    else
+                        # No conn config for this app — start idle timer to clean up last conn
+                        start_idle_conn_timer
+                    fi
+                    # Per-app Kill Others on Launch for normal apps
+                    NK_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.killothers"
+                    if [ -f "$NK_FILE" ]; then
+                        apply_killothers "$DETECTED_PKG"
+                    fi
+                    # Per-app saturation for normal apps
+                    NORM_SAT_FILE="$REFRESH_LOCK_DIR/${DETECTED_PKG}.sat"
+                    if [ -f "$NORM_SAT_FILE" ]; then
+                        NORM_SAT_RAW=$(tr -d '\r\n\t ' < "$NORM_SAT_FILE")
+                        if [ -n "$NORM_SAT_RAW" ] && [ "$NORM_SAT_RAW" -ge 0 ] 2>/dev/null && [ "$NORM_SAT_RAW" -le 20 ] 2>/dev/null; then
+                            NORM_SAT_VAL=$(awk -v raw="$NORM_SAT_RAW" 'BEGIN{printf "%.1f", raw / 10}')
+                            service call SurfaceFlinger 1022 f "$NORM_SAT_VAL" >/dev/null 2>&1
+                            _last_sat_pkg="$DETECTED_PKG"
+                            log_msg "🎨 Per-app saturation: ${NORM_SAT_VAL}x → $DETECTED_PKG"
+                        fi
+                    elif [ -n "$_last_sat_pkg" ] && [ "$_last_sat_pkg" != "$DETECTED_PKG" ]; then
+                        G_SAT=""
+                        [ -f "$GLOBAL_SAT_FILE" ] && G_SAT=$(tr -d '\r\n\t ' < "$GLOBAL_SAT_FILE")
+                        if [ -n "$G_SAT" ]; then
+                            service call SurfaceFlinger 1022 f "$G_SAT" >/dev/null 2>&1
+                            log_msg "🎨 Global saturation restored: ${G_SAT}x (leaving ${_last_sat_pkg})"
+                        else
+                            service call SurfaceFlinger 1022 f 1.0 >/dev/null 2>&1
+                            log_msg "🎨 Saturation reset to 1.0 (no global, leaving ${_last_sat_pkg})"
+                        fi
+                        _last_sat_pkg=""
+                    fi
+                    # Release Gaming Battery Guard if was active for a game
+                    if [ -f /dev/.davion_batt_guard_app_active ]; then
+                        rm -f /dev/.davion_batt_guard_app_active
+                        echo "0" > /dev/.davion_batt_guard_state 2>/dev/null
+                        # Restore CPU min_freq to hardware min
+                        for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                            [ -d "$POLICY" ] || continue
+                            HW_MIN=$(cat "$POLICY/cpuinfo_min_freq" 2>/dev/null || echo 0)
+                            [ "$HW_MIN" -gt 0 ] && chmod 644 "$POLICY/scaling_min_freq" 2>/dev/null && \
+                                echo "$HW_MIN" > "$POLICY/scaling_min_freq" 2>/dev/null
+                        done
+                        settings put global low_power_trigger_level 15 2>/dev/null
+                        log_msg "🛡️ Gaming Battery Guard released"
+                    fi
+                    enable_zram
+                    apply_non_gaming_logic
+                    rm -f "$GAME_STATE_FILE"
+                    echo "1" > "$NORMAL_STATE_FILE"
+                    # Battery Saver: enable when normal app is foreground (not spared)
+                    if [ -f "$BATT_SAVER_FLAG" ]; then
+                        if [ -f "$BATT_SAVER_SPARE" ] && grep -Fxq "$DETECTED_PKG" "$BATT_SAVER_SPARE" 2>/dev/null; then
+                            settings put global low_power 0 2>/dev/null
+                            log_msg "🔋 Battery Saver OFF (spared: $DETECTED_PKG)"
+                        else
+                            settings put global low_power 1 2>/dev/null
+                            log_msg "🔋 Battery Saver ON → $DETECTED_PKG"
+                        fi
+                    fi
+            fi
+            ;;
+    esac
+}
+
+# Define the monitor function IN THE MAIN SCOPE
+start_logcat_monitor() {
+    log_msg "🚀 Starting direct logcat stream processor..."
+    
+    while true; do
+        # FIX: Use standard pipe '|' instead of process substitution '< <()'
+        # This works on mksh, sh, and bash on all Android versions
+        logcat -b events -T 1 -v threadtime | while IFS= read -r line; do
+            process_log_line "$line"
+        done
+        
+        # If logcat dies or the pipe breaks, restart after delay
+        log_msg "⚠️ Logcat stream disconnected. Restarting in 2s..."
+        sleep 2
+    done
+}
+
+# Kill any existing monitor first to prevent duplicates
+if [ -f "$LOGCAT_PID_FILE" ]; then
+    OLD_PID=$(cat "$LOGCAT_PID_FILE")
+    kill "$OLD_PID" 2>/dev/null
+fi
+
+# ── FAST BRIGHTNESS DAEMON ────────────────────────────────────
+# Dedicated lightweight loop that only handles brightness.
+# Runs independently so brightness applies within ~1 second
+# regardless of how long the main logcat processing takes.
+start_brightness_daemon() {
+    local BRIGHT_DIR="$REFRESH_LOCK_DIR"
+    local UNIV_BRIGHT="$EXTERNAL_CFG/universal_brightness.txt"
+    local PREV_PKG=""
+    local BRIGHT_TRIGGER="/dev/.davion_bright_retrigger"
+
+    while true; do
+        # Read the current foreground package from the game/normal state files
+        CURR_PKG=""
+        if [ -f "$GAME_STATE_FILE" ]; then
+            CURR_PKG=$(cat "$GAME_STATE_FILE" 2>/dev/null | tr -d '\r\n\t ')
+        fi
+        if [ -z "$CURR_PKG" ] && [ -f "$NORMAL_STATE_FILE" ]; then
+            CURR_PKG=$(cat "/dev/.davion_last_fg_pkg" 2>/dev/null | tr -d '\r\n\t ')
+        fi
+
+        # Check if brightness was updated for current app (retrigger flag)
+        FORCE_APPLY=0
+        if [ -f "$BRIGHT_TRIGGER" ]; then
+            TRIGGER_PKG=$(cat "$BRIGHT_TRIGGER" 2>/dev/null | tr -d '\r\n\t ')
+            if [ -n "$TRIGGER_PKG" ] && [ "$TRIGGER_PKG" = "$CURR_PKG" ]; then
+                FORCE_APPLY=1
+            fi
+            rm -f "$BRIGHT_TRIGGER"
+        fi
+
+        # Act when app changed OR force-retrigger requested
+        if [ -n "$CURR_PKG" ] && { [ "$CURR_PKG" != "$PREV_PKG" ] || [ "$FORCE_APPLY" = 1 ]; }; then
+            PREV_PKG="$CURR_PKG"
+            APP_BRIGHT_FILE="$BRIGHT_DIR/${CURR_PKG}.bright"
+            if [ -f "$APP_BRIGHT_FILE" ]; then
+                BV=$(tr -d '\r\n\t ' < "$APP_BRIGHT_FILE")
+                if [ -n "$BV" ] && [ "$BV" -ge 0 ] 2>/dev/null && [ "$BV" -le 255 ] 2>/dev/null; then
+                    settings put system screen_brightness_mode 0 2>/dev/null
+                    settings put system screen_brightness "$BV" 2>/dev/null
+                fi
+            elif [ -f "$UNIV_BRIGHT" ]; then
+                UB=$(tr -d '\r\n\t ' < "$UNIV_BRIGHT")
+                if [ -n "$UB" ] && [ "$UB" -ge 0 ] 2>/dev/null && [ "$UB" -le 255 ] 2>/dev/null; then
+                    settings put system screen_brightness_mode 0 2>/dev/null
+                    settings put system screen_brightness "$UB" 2>/dev/null
+                fi
+            fi
+        fi
+
+        sleep 0.233  # poll every 233ms — catches app switch within ~0.7s worst case
+    done
+}
+
+# Start the monitor in the background
+start_logcat_monitor &
+MONITOR_PID=$!
+echo "$MONITOR_PID" > "$LOGCAT_PID_FILE"
+
+# Start fast brightness daemon in parallel
+start_brightness_daemon &
+BRIGHT_PID=$!
+
+# ── FAST VOLUME DAEMON ────────────────────────────────────────
+# Dedicated loop that applies per-app volume on foreground change
+start_volume_daemon() {
+    local VOL_DIR="$REFRESH_LOCK_DIR"
+    local UNIV_VOL="$EXTERNAL_CFG/universal_vol.txt"
+    local PREV_PKG=""
+    local VOL_TRIGGER="/dev/.davion_vol_retrigger"
+
+    while true; do
+        CURR_PKG=""
+        if [ -f "$GAME_STATE_FILE" ]; then
+            CURR_PKG=$(cat "$GAME_STATE_FILE" 2>/dev/null | tr -d '
+	 ')
+        fi
+        if [ -z "$CURR_PKG" ] && [ -f "$NORMAL_STATE_FILE" ]; then
+            CURR_PKG=$(cat "/dev/.davion_last_fg_pkg" 2>/dev/null | tr -d '
+	 ')
+        fi
+        # Fallback: poll foreground pkg directly if state files not yet written
+        if [ -z "$CURR_PKG" ]; then
+            CURR_PKG=$(dumpsys activity top 2>/dev/null                 | grep -m1 "ACTIVITY"                 | grep -oE "[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+"                 | head -1)
+        fi
+
+        FORCE_APPLY=0
+        if [ -f "$VOL_TRIGGER" ]; then
+            TRIGGER_PKG=$(cat "$VOL_TRIGGER" 2>/dev/null | tr -d '
+	 ')
+            if [ -n "$TRIGGER_PKG" ] && [ "$TRIGGER_PKG" = "$CURR_PKG" ]; then
+                FORCE_APPLY=1
+            fi
+            rm -f "$VOL_TRIGGER"
+        fi
+
+        if [ -n "$CURR_PKG" ] && { [ "$CURR_PKG" != "$PREV_PKG" ] || [ "$FORCE_APPLY" = 1 ]; }; then
+            PREV_PKG="$CURR_PKG"
+            APP_VOL_FILE="$VOL_DIR/${CURR_PKG}.vol"
+            if [ -f "$APP_VOL_FILE" ]; then
+                VV=$(tr -d '
+	 ' < "$APP_VOL_FILE")
+                if [ -n "$VV" ] && [ "$VV" -ge 0 ] 2>/dev/null && [ "$VV" -le 100 ] 2>/dev/null; then
+                    apply_volume "$VV"
+                fi
+            elif [ -f "$UNIV_VOL" ]; then
+                UV=$(tr -d '
+	 ' < "$UNIV_VOL")
+                if [ -n "$UV" ] && [ "$UV" -ge 0 ] 2>/dev/null && [ "$UV" -le 100 ] 2>/dev/null; then
+                    apply_volume "$UV"
+                fi
+            fi
+        fi
+
+        sleep 0.5
+    done
+}
+
+start_volume_daemon &
+VOL_PID=$!
+
+log_msg "✅ Monitor started with PID: $MONITOR_PID | Brightness daemon PID: $BRIGHT_PID | Volume daemon PID: $VOL_PID"
+
+# Optional: Clean up on script exit
+trap "kill $MONITOR_PID $BRIGHT_PID $VOL_PID 2>/dev/null; rm -f $LOGCAT_PID_FILE" EXIT INT TERM
+
+LOGCAT_PID=$!
+echo $LOGCAT_PID > "$LOGCAT_PID_FILE"
+
+# Optional: Use inotifywait to monitor State Files for external changes
+# This replaces the need to poll these files inside the main loop if other scripts modify them
+if command -v inotifywait >/dev/null 2>&1; then
+    (
+        log_msg "👁️ Starting inotify watcher for state files..."
+        while true; do
+            # Watch for modifications to state files
+            inotifywait -q -e modify "$GAME_STATE_FILE" "$NORMAL_STATE_FILE" "$CAMERA_STATE_FILE" "$CPUSET_STATE_FILE" 2>/dev/null
+            
+            # Trigger a dummy event or re-check logic if needed
+            # For this script, the main logic is driven by logcat, but this ensures 
+            # the script wakes up immediately if an external tool tweaks these flags
+            log_msg "🔄 State file modification detected via inotify"
+            
+            # Example: Force refresh cpusets if CPUSET_STATE_FILE was touched externally
+            if [ -f "$CPUSET_STATE_FILE" ]; then
+                 # Add custom logic here if external tools modify state files
+                 :
+            fi
+        done
+    ) &
+else
+    log_msg "⚠️ inotifywait not found. Running in fallback mode (Logcat stream only)."
+fi
+
+# Main Keep-Alive Loop (No sleep polling for logs anymore)
+# This loop just ensures the background logcat processor stays alive
+while true; do
+    if [ -f "$LOGCAT_PID_FILE" ]; then
+        CUR_PID=$(cat "$LOGCAT_PID_FILE")
+        if ! kill -0 "$CUR_PID" 2>/dev/null; then
+            log_msg "🔄 Logcat processor died, restarting..."
+            pkill -f "logcat.*events" 2>/dev/null
+            # The subshell above has 'exec $0' to restart itself, but we can also respawn here
+            # For simplicity, we rely on the subshell's self-restart or let the watchdog handle it
+        fi
+    fi
+    sleep 5 # Long sleep just for watchdog, not for event detection
+done

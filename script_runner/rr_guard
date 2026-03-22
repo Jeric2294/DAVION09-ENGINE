@@ -1,0 +1,116 @@
+#!/system/bin/sh
+# =============================================================================
+#  RR GUARD DAEMON — Instant restore when display drops to 60Hz externally
+#  Watches active SF display mode. If it drifts away from saved target
+#  (thermal throttle, system override, etc.) and idle60 didn't do it,
+#  re-applies the correct per-app or universal RR immediately.
+# =============================================================================
+
+MODDIR="/data/adb/modules/GovThermal"
+LOG="/sdcard/GovThermal/GovThermal.log"
+CFG_DIR="/sdcard/GovThermal/config"
+RR_LOCK_DIR="/sdcard/DAVION_ENGINE/refresh_locks"
+UNIVERSAL_RR_FILE="/sdcard/DAVION_ENGINE/universal_rr.txt"
+LAST_FG_PKG="/dev/.davion_last_fg_pkg"
+ENABLED_FILE="$CFG_DIR/rr_guard_enabled"
+IDLE60_FLAG="/dev/.davion_idle60_dropped"   # set by idle60_daemon when it intentionally drops
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [RR_GUARD] $1" >> "$LOG"; }
+
+renice -n -10 -p $$ 2>/dev/null
+echo $$ > /dev/cpuset/top-app/tasks 2>/dev/null
+[ -f /proc/$$/oom_score_adj ] && echo -900 > /proc/$$/oom_score_adj 2>/dev/null
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+get_fg_pkg() { cat "$LAST_FG_PKG" 2>/dev/null | tr -d '[:space:]'; }
+
+get_target_mode() {
+    pkg="$1"
+    mode=""
+    [ -n "$pkg" ] && [ -f "$RR_LOCK_DIR/${pkg}.mode" ] && \
+        mode=$(tr -d '[:space:]' < "$RR_LOCK_DIR/${pkg}.mode" 2>/dev/null)
+    [ -z "$mode" ] && [ -f "$UNIVERSAL_RR_FILE" ] && \
+        mode=$(tr -d '[:space:]' < "$UNIVERSAL_RR_FILE" 2>/dev/null)
+    echo "${mode:-}"
+}
+
+# Get current active display mode ID from SurfaceFlinger
+get_active_mode() {
+    mode=$(dumpsys display 2>/dev/null | grep -E 'mActiveDisplayModeId|mSfActiveDisplayModeId' | \
+        grep -oE '[0-9]+' | head -1)
+    [ -z "$mode" ] && mode=$(dumpsys display 2>/dev/null | \
+        grep -E 'mActiveMode|activeMode' | grep -oE 'id=[0-9]+' | grep -oE '[0-9]+' | head -1)
+    echo "${mode:-}"
+}
+
+# Check if a mode ID corresponds to 60Hz
+mode_is_60hz() {
+    mid="$1"
+    [ -z "$mid" ] && return 1
+    hz=$(dumpsys display 2>/dev/null | grep -A 24 'mSfDisplayModes=' | \
+        grep "id=$mid," | grep -oE 'refreshRate=[0-9]+' | grep -oE '[0-9]+' | head -1)
+    [ -z "$hz" ] && hz=$(dumpsys display 2>/dev/null | grep -A 24 'mSfDisplayModes=' | \
+        grep "id=$mid," | grep -oE 'vsyncRate=[0-9]+' | grep -oE '[0-9]+' | head -1)
+    [ "$hz" = "60" ] && return 0
+    return 1
+}
+
+apply_mode() {
+    mid="$1"
+    [ -z "$mid" ] && return
+    service call SurfaceFlinger 1035 i32 "$mid" >/dev/null 2>&1
+}
+
+# ── startup ──────────────────────────────────────────────────────────────────
+log_msg "start"
+
+_last_active=""
+_cooldown=0     # seconds to skip after we just applied (avoid loop)
+
+cleanup() { log_msg "stopped"; exit 0; }
+trap cleanup INT TERM EXIT
+
+while true; do
+    # check still enabled
+    [ "$(tr -d '[:space:]' < "$ENABLED_FILE" 2>/dev/null)" = "1" ] || { log_msg "disabled — exit"; cleanup; }
+
+    # skip if idle60 intentionally dropped to 60Hz
+    if [ -f "$IDLE60_FLAG" ]; then
+        _cooldown=0
+        sleep 1
+        continue
+    fi
+
+    # cooldown after we just applied (avoid thrash)
+    if [ "$_cooldown" -gt 0 ]; then
+        _cooldown=$(( _cooldown - 1 ))
+        sleep 1
+        continue
+    fi
+
+    PKG=$(get_fg_pkg)
+    TARGET=$(get_target_mode "$PKG")
+
+    # no target configured — nothing to guard
+    if [ -z "$TARGET" ] || [ "$TARGET" = "0" ]; then
+        sleep 2
+        continue
+    fi
+
+    ACTIVE=$(get_active_mode)
+
+    # if active changed and it is NOT the target, check if it's 60Hz
+    if [ -n "$ACTIVE" ] && [ "$ACTIVE" != "$TARGET" ] && [ "$ACTIVE" != "$_last_active_ok" ]; then
+        if mode_is_60hz "$ACTIVE"; then
+            apply_mode "$TARGET"
+            log_msg "60Hz drop detected (mode $ACTIVE) [$PKG] → restored mode $TARGET"
+            _cooldown=3   # 3s grace before next check
+            _last_active_ok="$TARGET"
+        fi
+    else
+        _last_active_ok="$ACTIVE"
+    fi
+
+    sleep 1
+done

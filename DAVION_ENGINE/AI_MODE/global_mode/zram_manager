@@ -1,0 +1,80 @@
+#!/system/bin/sh
+# =============================================================
+# ZRAM MANAGER v2 — DAVION ENGINE
+# Optimized zram enable/disable with auto-sizing, algorithm
+# detection, and swappiness tuning.
+# =============================================================
+
+ZRAM_LOG="/sdcard/GovThermal/GovThermal.log"
+zr_log() { echo "[$(date '+%H:%M:%S')] [ZRAM] $1" >> "$ZRAM_LOG"; }
+
+disable_zram() {
+    zr_log "Disabling ZRAM..."
+    local zdev
+    zdev=$(grep "/zram" /proc/swaps 2>/dev/null | awk '{print $1}')
+    [ -z "$zdev" ] && zdev="/dev/block/zram0"
+    local zname; zname=$(basename "$zdev")
+
+    swapoff "$zdev" 2>/dev/null
+    echo 1 > "/sys/block/${zname}/reset" 2>/dev/null
+    echo 0 > /proc/sys/vm/swappiness 2>/dev/null
+    zr_log "ZRAM disabled"
+}
+
+enable_zram() {
+    # Load saved settings
+    local CONF="/data/adb/zram_config/settings.conf"
+    local SIZE ALGO SWAP STREAMS
+    if [ -f "$CONF" ]; then
+        . "$CONF"
+    fi
+
+    # Auto-size: if not configured, use 50% of RAM (max 4GB)
+    if [ -z "$SIZE" ]; then
+        local mem_kb
+        mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        local mem_mb=$((mem_kb / 1024))
+        local target_mb=$((mem_mb / 2))
+        [ "$target_mb" -gt 4096 ] && target_mb=4096
+        SIZE="${target_mb}M"
+        zr_log "Auto-sized ZRAM to ${SIZE}"
+    fi
+
+    # Auto-detect best compression algorithm
+    if [ -z "$ALGO" ]; then
+        local avail_algos
+        avail_algos=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | tr -d '[]')
+        for try_algo in lz4 lz4hc zstd lzo-rle lzo; do
+            if echo "$avail_algos" | grep -qw "$try_algo"; then
+                ALGO="$try_algo"
+                break
+            fi
+        done
+        [ -z "$ALGO" ] && ALGO="lz4"
+        zr_log "Auto-selected algorithm: $ALGO"
+    fi
+
+    [ -z "$SWAP" ] && SWAP="100"
+
+    # Detect zram device
+    local ZDEV
+    ZDEV=$(grep "/zram" /proc/swaps 2>/dev/null | awk '{print $1}')
+    [ -z "$ZDEV" ] && ZDEV="/dev/block/zram0"
+    local ZNAME; ZNAME=$(basename "$ZDEV")
+
+    # Set number of streams to CPU count for parallel compression
+    local cpu_count
+    cpu_count=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
+    [ "$cpu_count" -gt 0 ] && \
+        echo "$cpu_count" > "/sys/block/${ZNAME}/max_comp_streams" 2>/dev/null
+
+    swapoff "$ZDEV" 2>/dev/null
+    echo 1 > "/sys/block/${ZNAME}/reset" 2>/dev/null
+    echo "$ALGO" > "/sys/block/${ZNAME}/comp_algorithm" 2>/dev/null
+    echo "$SIZE" > "/sys/block/${ZNAME}/disksize" 2>/dev/null
+    mkswap "$ZDEV" > /dev/null 2>&1
+    swapon -p 32767 "$ZDEV" 2>/dev/null || swapon "$ZDEV" 2>/dev/null
+    echo "$SWAP" > /proc/sys/vm/swappiness 2>/dev/null
+
+    zr_log "ZRAM enabled: ${SIZE} ${ALGO} swappiness=${SWAP}"
+}

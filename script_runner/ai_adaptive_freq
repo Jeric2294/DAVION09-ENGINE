@@ -1,0 +1,144 @@
+#!/system/bin/sh
+# =============================================================================
+#  AI ADAPTIVE FREQ — DAVION ENGINE
+#  Feedback loop: every 10s evaluates temperature + battery drain + FPS,
+#  then nudges freq_scale up or down by ±5–20% to maintain balance.
+#
+#  Intentionally defers to:
+#    - Thermal predictor (if ai_thermal_state = warn/critical)
+#    - Gaming daemon (if app class = gaming)
+#
+#  State file: /dev/.davion_adaptive_state  (for WebUI live read)
+# =============================================================================
+
+MODDIR="/data/adb/modules/GovThermal"
+CFG_DIR="/sdcard/GovThermal/config"
+LOG="/sdcard/GovThermal/GovThermal.log"
+FREQ_FILE="/sdcard/GovThermal/freq_scale.txt"
+ADAPTIVE_STATE="/dev/.davion_adaptive_state"
+ADAPTIVE_PID_FILE="$CFG_DIR/ai_adaptive_freq.pid"
+ADAPTIVE_ENABLED_FILE="$CFG_DIR/ai_adaptive_enabled"
+THERMAL_STATE_FILE="$CFG_DIR/ai_thermal_state"
+
+EVAL_INTERVAL=10      # seconds between evaluations
+MIN_SCALE=40          # never go below this %
+MAX_SCALE=100         # never go above this %
+# Scores that result in delta adjustments
+TEMP_WARN=43          # start reducing above this
+TEMP_HOT=47           # reduce faster above this
+TEMP_COOL=36          # allow increasing below this
+DRAIN_HIGH=3200       # mA — high drain threshold
+DRAIN_MOD=2200        # mA — moderate drain
+DRAIN_LOW=700         # mA — light load, allow increase
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [AI-ADAPT] $1" >> "$LOG"; }
+
+# ── Sensor reads ──────────────────────────────────────────────────────────────
+read_temp() {
+    local t
+    t=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)
+    [ -n "$t" ] && [ "$t" -gt 0 ] 2>/dev/null && echo $((t / 10)) && return
+    for zone in /sys/class/thermal/thermal_zone*/temp; do
+        [ -f "$zone" ] || continue
+        t=$(cat "$zone" 2>/dev/null)
+        if [ -n "$t" ] && [ "$t" -gt 0 ] 2>/dev/null; then
+            [ "$t" -gt 1000 ] && echo $((t / 1000)) || echo "$t"
+            return
+        fi
+    done
+    echo "0"
+}
+
+read_current_ma() {
+    local c
+    c=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null \
+     || cat /sys/class/power_supply/battery/current_avg 2>/dev/null)
+    [ -z "$c" ] && echo "0" && return
+    c=${c#-}   # absolute value
+    echo $((c / 1000))
+}
+
+# ── Check if another AI daemon has override priority ─────────────────────────
+thermal_override_active() {
+    local state
+    state=$(cat "$THERMAL_STATE_FILE" 2>/dev/null)
+    case "$state" in
+        warn:*|critical:*) return 0 ;;
+    esac
+    return 1
+}
+
+gaming_active() {
+    local class
+    class=$(cat /dev/.davion_app_class 2>/dev/null | tr -d '[:space:]')
+    [ "$class" = "gaming" ]
+}
+
+# ── Scoring + adjustment ──────────────────────────────────────────────────────
+evaluate_and_adjust() {
+    local cur_scale
+    cur_scale=$(cat "$FREQ_FILE" 2>/dev/null | tr -d '[:space:]')
+    [ -z "$cur_scale" ] && cur_scale=100
+    cur_scale=$((cur_scale + 0))
+
+    local temp ma
+    temp=$(read_temp)
+    ma=$(read_current_ma)
+
+    local delta=0
+    local reason=""
+
+    # Temperature contribution
+    if [ "$temp" -ge "$TEMP_HOT" ]; then
+        delta=$((delta - 20))
+        reason="${reason}temp=${temp}(HOT) "
+    elif [ "$temp" -ge "$TEMP_WARN" ]; then
+        delta=$((delta - 10))
+        reason="${reason}temp=${temp}(WARN) "
+    elif [ "$temp" -le "$TEMP_COOL" ] && [ "$cur_scale" -lt 100 ]; then
+        delta=$((delta + 5))
+        reason="${reason}temp=${temp}(cool) "
+    fi
+
+    # Battery current contribution
+    if [ "$ma" -ge "$DRAIN_HIGH" ]; then
+        delta=$((delta - 10))
+        reason="${reason}mA=${ma}(high) "
+    elif [ "$ma" -ge "$DRAIN_MOD" ]; then
+        delta=$((delta - 5))
+        reason="${reason}mA=${ma}(mod) "
+    elif [ "$ma" -le "$DRAIN_LOW" ] && [ "$cur_scale" -lt 100 ]; then
+        delta=$((delta + 5))
+        reason="${reason}mA=${ma}(low) "
+    fi
+
+    # No meaningful change — skip write
+    [ "$delta" -eq 0 ] && return
+
+    local new_scale=$((cur_scale + delta))
+    [ "$new_scale" -gt $MAX_SCALE ] && new_scale=$MAX_SCALE
+    [ "$new_scale" -lt $MIN_SCALE ] && new_scale=$MIN_SCALE
+
+    # Skip if already at target (avoid noisy writes)
+    [ "$new_scale" -eq "$cur_scale" ] && return
+
+    echo "$new_scale" > "$FREQ_FILE"
+    echo "${cur_scale}->${new_scale}|${reason}|$(date '+%H:%M:%S')" > "$ADAPTIVE_STATE"
+    log_msg "${cur_scale}% → ${new_scale}% (${reason}delta=${delta})"
+}
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+echo $$ > "$ADAPTIVE_PID_FILE"
+log_msg "Started — eval every ${EVAL_INTERVAL}s, range ${MIN_SCALE}–${MAX_SCALE}%"
+
+while true; do
+    sleep $EVAL_INTERVAL
+
+    [ -f "$ADAPTIVE_ENABLED_FILE" ] || { log_msg "Disabled — exiting"; rm -f "$ADAPTIVE_PID_FILE"; exit 0; }
+
+    # Defer to higher-priority daemons
+    thermal_override_active && continue
+    gaming_active           && continue
+
+    evaluate_and_adjust
+done

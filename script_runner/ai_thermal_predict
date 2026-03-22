@@ -1,0 +1,147 @@
+#!/system/bin/sh
+# =============================================================================
+#  AI THERMAL PREDICTOR — DAVION ENGINE
+#  Samples thermal sensors every 3s, maintains a 10-sample rolling window,
+#  runs linear regression to predict temperature 15s ahead, and pre-adjusts
+#  freq cap before throttling hits.
+#  Writes state to: /sdcard/GovThermal/config/ai_thermal_state
+# =============================================================================
+
+MODDIR="/data/adb/modules/GovThermal"
+CFG_DIR="/sdcard/GovThermal/config"
+LOG="/sdcard/GovThermal/GovThermal.log"
+FREQ_FILE="/sdcard/GovThermal/freq_scale.txt"
+THERMAL_STATE_FILE="$CFG_DIR/ai_thermal_state"
+THERMAL_PID_FILE="$CFG_DIR/ai_thermal_predict.pid"
+THERMAL_ENABLED_FILE="$CFG_DIR/ai_thermal_enabled"
+DE="$MODDIR/DAVION_ENGINE/AI_MODE/de_cpu_engine"
+
+SAMPLE_INTERVAL=3    # seconds per sample
+WINDOW_SIZE=10       # rolling window size
+PREDICT_STEPS=5      # steps ahead (= 15s with 3s interval)
+WARN_TEMP=43         # pre-emptive freq reduction threshold (°C)
+CRITICAL_TEMP=48     # hard reduction threshold (°C)
+RESTORE_TEMP=38      # threshold to restore normal freq (°C)
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [AI-THERM] $1" >> "$LOG"; }
+
+# ── Read best available thermal sensor ───────────────────────────────────────
+read_temp() {
+    local t
+
+    # Battery temp is the most reliable sustained-load indicator
+    t=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)
+    if [ -n "$t" ] && [ "$t" -gt 0 ] 2>/dev/null; then
+        echo $((t / 10)); return
+    fi
+
+    # MTK CPU cluster sensors
+    for zone in /sys/class/thermal/thermal_zone*/temp; do
+        [ -f "$zone" ] || continue
+        t=$(cat "$zone" 2>/dev/null)
+        if [ -n "$t" ] && [ "$t" -gt 0 ] 2>/dev/null; then
+            if [ "$t" -gt 1000 ]; then
+                echo $((t / 1000)); return
+            else
+                echo "$t"; return
+            fi
+        fi
+    done
+    echo "0"
+}
+
+# ── Linear regression: predict N steps ahead ─────────────────────────────────
+# Input: space-separated sample list, steps ahead
+# Output: predicted integer temperature
+predict_temp() {
+    local samples="$1"
+    local steps="$2"
+    echo "$samples" | tr ' ' '\n' | grep -v '^$' | awk -v steps="$steps" '
+    BEGIN { n=0; sx=0; sy=0; sxy=0; sxx=0; last=0 }
+    {
+        n++; val=$1+0
+        sx += n; sy += val
+        sxy += n * val; sxx += n * n
+        last = val
+    }
+    END {
+        if (n < 2) { print last; exit }
+        denom = n * sxx - sx * sx
+        if (denom == 0) { print int(sy/n); exit }
+        slope = (n * sxy - sx * sy) / denom
+        intercept = (sy - slope * sx) / n
+        predicted = slope * (n + steps) + intercept
+        if (predicted < 0) predicted = 0
+        printf "%d\n", int(predicted + 0.5)
+    }'
+}
+
+# ── Apply pre-emptive freq adjustment ────────────────────────────────────────
+_last_action=""
+_adj_scale=0
+
+apply_thermal_action() {
+    local predicted=$1 current=$2
+    local cur_scale
+    cur_scale=$(cat "$FREQ_FILE" 2>/dev/null | tr -d '[:space:]')
+    [ -z "$cur_scale" ] && cur_scale=100
+
+    if [ "$predicted" -ge "$CRITICAL_TEMP" ] && [ "$_last_action" != "critical" ]; then
+        local new_scale=60
+        [ "$cur_scale" -le 60 ] && return   # already low enough
+        log_msg "⚠ CRITICAL — predicted ${predicted}°C (now ${current}°C) → cap ${new_scale}%"
+        echo "$new_scale" > "$FREQ_FILE"
+        echo "critical:${predicted}:${current}" > "$THERMAL_STATE_FILE"
+        [ -f "$DE" ] && { . "$DE"; de_balanced_cpu 2>/dev/null; }
+        _last_action="critical"
+        _adj_scale=$new_scale
+
+    elif [ "$predicted" -ge "$WARN_TEMP" ] && \
+         [ "$_last_action" != "warn" ] && [ "$_last_action" != "critical" ]; then
+        local new_scale=80
+        [ "$cur_scale" -le 80 ] && return
+        log_msg "⚡ WARN — predicted ${predicted}°C (now ${current}°C) → cap ${new_scale}%"
+        echo "$new_scale" > "$FREQ_FILE"
+        echo "warn:${predicted}:${current}" > "$THERMAL_STATE_FILE"
+        _last_action="warn"
+        _adj_scale=$new_scale
+
+    elif [ "$predicted" -le "$RESTORE_TEMP" ] && [ -n "$_last_action" ] && \
+         [ "$_last_action" != "normal" ]; then
+        log_msg "✅ NORMAL — predicted ${predicted}°C (now ${current}°C) → restore 100%"
+        echo "100" > "$FREQ_FILE"
+        echo "normal:${predicted}:${current}" > "$THERMAL_STATE_FILE"
+        _last_action="normal"
+        _adj_scale=0
+    fi
+}
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+echo $$ > "$THERMAL_PID_FILE"
+log_msg "Started — window=${WINDOW_SIZE}×${SAMPLE_INTERVAL}s, predict=${PREDICT_STEPS} steps ahead"
+
+samples=""
+count=0
+
+while true; do
+    [ -f "$THERMAL_ENABLED_FILE" ] || { log_msg "Disabled — exiting"; rm -f "$THERMAL_PID_FILE"; exit 0; }
+
+    temp=$(read_temp)
+    if [ "$temp" -le 0 ] 2>/dev/null; then sleep $SAMPLE_INTERVAL; continue; fi
+
+    # Append sample, trim to window
+    samples="${samples} ${temp}"
+    count=$((count + 1))
+    if [ "$count" -gt "$WINDOW_SIZE" ]; then
+        samples=$(echo "$samples" | tr ' ' '\n' | grep -v '^$' | tail -n "$WINDOW_SIZE" | tr '\n' ' ')
+        count=$WINDOW_SIZE
+    fi
+
+    # Predict once we have at least 4 samples (12 seconds of data)
+    if [ "$count" -ge 4 ]; then
+        predicted=$(predict_temp "$samples" "$PREDICT_STEPS")
+        apply_thermal_action "$predicted" "$temp"
+    fi
+
+    sleep $SAMPLE_INTERVAL
+done
