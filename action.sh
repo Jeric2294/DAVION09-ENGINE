@@ -2,7 +2,7 @@
 # ============================================================
 #  DAVION09 ENGINE — Action Handler
 #  Author: Jeric Aparicio
-#  Action = Fetch latest files from GitHub via manifest.txt
+#  Action = Fetch latest files from GitHub
 # ============================================================
 
 MODID="GovThermal"
@@ -19,6 +19,57 @@ MANIFEST_URL="https://raw.githubusercontent.com/$GITHUB_USER/$GITHUB_REPO/$BRANC
 
 log() { echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG"; }
 
+# === Required files — hardcoded list ===
+REQUIRED_FILES="
+action.sh
+service.sh
+post-fs-data.sh
+customize.sh
+system.prop
+module.prop
+service.d/davion_engine_webui.sh
+script_runner/refresh_rate_locker
+script_runner/rr_guard
+script_runner/idle60_daemon
+script_runner/sf_controller
+script_runner/thermal_watchdog
+script_runner/thermal_toggle
+script_runner/battery_guard
+script_runner/headset_daemon
+script_runner/ai_thermal_predict
+script_runner/ai_adaptive_freq
+script_runner/ai_app_classifier
+script_runner/encore_app_daemon
+script_runner/global
+script_runner/display_mode
+script_runner/davion_engine_eem_boot
+script_runner/davion_engine_manual
+logcat_detection/logcat
+logcat_detection/dumpsys2
+webroot/index.html
+webroot/style.css
+webroot/script.js
+webroot/config.json
+webroot/cgi-bin/exec.sh
+webroot/cgi-bin/icon.sh
+webroot/cgi-bin/test.sh
+DAVION_ENGINE/AI_MODE/azenith_cpu_engine
+DAVION_ENGINE/AI_MODE/cpu_governor_control
+DAVION_ENGINE/AI_MODE/de_cpu_engine
+"
+
+is_required() {
+    target="$1"
+    for f in $REQUIRED_FILES; do
+        [ "$f" = "$target" ] && return 0
+    done
+    return 1
+}
+
+download() {
+    "$BB" wget -q --timeout=15 --tries=3 -O "$2" "$1" 2>/dev/null
+}
+
 # ── HEADER ───────────────────────────────────────────────────
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  DAVION09 ENGINE — OTA Update"
@@ -29,9 +80,8 @@ log "=== ACTION START ==="
 # ── CHECK NETWORK ────────────────────────────────────────────
 ui_print ""
 ui_print "⚙ Checking network..."
-if ! ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1; then
+if ! "$BB" wget -q --timeout=5 -O /dev/null "1.1.1.1" 2>/dev/null; then
     ui_print "✗ No internet connection!"
-    ui_print "  Connect to WiFi or Mobile Data first."
     log "ERROR: No network"
     ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     exit 1
@@ -41,23 +91,17 @@ ui_print "✔ Network OK"
 # ── DOWNLOAD MANIFEST ────────────────────────────────────────
 ui_print "⚙ Fetching manifest from GitHub..."
 mkdir -p "$TMP"
-log "Fetching: $MANIFEST_URL"
 
-"$BB" wget -q --timeout=10 --tries=3 \
-    -O "$TMP/manifest.txt" "$MANIFEST_URL" 2>/dev/null
-
-if [ ! -s "$TMP/manifest.txt" ]; then
-    ui_print "✗ Cannot reach GitHub."
-    ui_print "  Check internet and try again."
+if ! download "$MANIFEST_URL" "$TMP/manifest.txt" || [ ! -s "$TMP/manifest.txt" ]; then
+    ui_print "✗ Cannot reach GitHub. Try again later."
     log "ERROR: manifest download failed"
     rm -rf "$TMP"
     ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     exit 1
 fi
 ui_print "✔ Manifest fetched"
-log "Manifest downloaded OK"
 
-# ── FETCH EACH FILE ──────────────────────────────────────────
+# ── FETCH EACH REQUIRED FILE ─────────────────────────────────
 ui_print "↓ Downloading latest files..."
 updated=0
 failed=0
@@ -67,22 +111,23 @@ while IFS= read -r line; do
     case "$line" in \#*) continue ;; esac
 
     rel_path=$(echo "$line" | cut -d' ' -f1)
-    url=$(echo "$line"      | cut -d' ' -f2-)
+    url=$(echo "$line"      | cut -d' ' -f2- | xargs)
+
     [ -z "$rel_path" ] || [ -z "$url" ] && continue
 
-    target="$MODDIR/$rel_path"
-    mkdir -p "$(dirname "$target")" 2>/dev/null
+    if is_required "$rel_path"; then
+        target="$MODDIR/$rel_path"
+        mkdir -p "$(dirname "$target")" 2>/dev/null
 
-    if "$BB" wget -q --timeout=15 --tries=3 \
-        -O "$TMP/tmpfile" "$url" 2>/dev/null \
-        && [ -s "$TMP/tmpfile" ]; then
-        cp "$TMP/tmpfile" "$target"
-        chmod 755 "$target" 2>/dev/null
-        log "✔ $rel_path"
-        updated=$((updated + 1))
-    else
-        log "✗ FAILED: $rel_path"
-        failed=$((failed + 1))
+        if download "$url" "$TMP/tmpfile" && [ -s "$TMP/tmpfile" ]; then
+            cp "$TMP/tmpfile" "$target"
+            chmod 755 "$target" 2>/dev/null
+            log "✔ $rel_path"
+            updated=$((updated + 1))
+        else
+            log "✗ FAILED: $rel_path"
+            failed=$((failed + 1))
+        fi
     fi
 
 done < "$TMP/manifest.txt"
@@ -121,7 +166,7 @@ if [ "$updated" -gt 0 ]; then
     ui_print "  ✔ Updated $updated file(s)!"
     [ "$failed" -gt 0 ] && ui_print "  ⚠ Failed: $failed file(s)"
 else
-    ui_print "  ✔ No changes — already latest!"
+    ui_print "  ✔ Already up to date!"
 fi
 ui_print "  No reboot needed."
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
