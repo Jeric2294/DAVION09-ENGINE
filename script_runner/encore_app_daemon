@@ -229,6 +229,14 @@ restore_saturation() {
 # ── Per-app screen off timeout ────────────────────────────────
 # Tracks the pkg whose screen timeout is currently overriding the universal.
 _screentimeout_active_pkg=""
+_st_last_fg_pkg=""   # dedicated fg tracker — fires only on real app change
+
+# ── Per-app Connection on Launch ──────────────────────────────
+# WiFi/Data are only enabled when currently OFF.
+# We track WHICH pkg enabled each so we only disable it when that app leaves.
+_conn_last_fg_pkg=""
+_conn_wifi_enabled_by=""   # pkg that turned WiFi ON; empty = we didn't touch it
+_conn_data_enabled_by=""   # pkg that turned Data ON;  empty = we didn't touch it
 
 apply_per_app_screentimeout() {
     local pkg="$1"
@@ -257,6 +265,72 @@ restore_screentimeout() {
     fi
     settings put system screen_off_timeout 30000 2>/dev/null
     log_msg "  Screen timeout restored → 30000ms (default)"
+}
+
+# ── Conn-on-Launch helpers ────────────────────────────────────
+
+# Returns 0 if WiFi is currently on, 1 if off/unknown
+is_wifi_on() {
+    local w
+    w=$(settings get global wifi_on 2>/dev/null | tr -d '[:space:]')
+    [ "$w" = "1" ] && return 0
+    return 1
+}
+
+# Returns 0 if mobile data is currently on, 1 if off/unknown
+is_data_on() {
+    local d
+    d=$(settings get global mobile_data 2>/dev/null | tr -d '[:space:]')
+    [ "$d" = "1" ] && return 0
+    return 1
+}
+
+# Enable WiFi/Data based on .conn file — ONLY if currently OFF
+apply_per_app_conn() {
+    local pkg="$1"
+    local conn_file="$RR_DIR/$pkg.conn"
+    [ -f "$conn_file" ] || return
+    local ctype
+    ctype=$(tr -d '[:space:]' < "$conn_file")
+    case "$ctype" in
+        wifi|both)
+            if ! is_wifi_on; then
+                svc wifi enable 2>/dev/null
+                cmd wifi enable-wifi 2>/dev/null || true
+                _conn_wifi_enabled_by="$pkg"
+                log_msg "  Conn: WiFi enabled for $pkg"
+            else
+                log_msg "  Conn: WiFi already ON — skipping for $pkg"
+            fi
+            ;;
+    esac
+    case "$ctype" in
+        data|both)
+            if ! is_data_on; then
+                svc data enable 2>/dev/null
+                _conn_data_enabled_by="$pkg"
+                log_msg "  Conn: Data enabled for $pkg"
+            else
+                log_msg "  Conn: Data already ON — skipping for $pkg"
+            fi
+            ;;
+    esac
+}
+
+# Disable WiFi/Data on app leave — ONLY if WE were the ones who enabled it
+restore_conn() {
+    local leaving_pkg="$1"
+    if [ -n "$_conn_wifi_enabled_by" ] && [ "$_conn_wifi_enabled_by" = "$leaving_pkg" ]; then
+        svc wifi disable 2>/dev/null
+        cmd wifi disable-wifi 2>/dev/null || true
+        _conn_wifi_enabled_by=""
+        log_msg "  Conn: WiFi restored OFF (was enabled for $leaving_pkg)"
+    fi
+    if [ -n "$_conn_data_enabled_by" ] && [ "$_conn_data_enabled_by" = "$leaving_pkg" ]; then
+        svc data disable 2>/dev/null
+        _conn_data_enabled_by=""
+        log_msg "  Conn: Data restored OFF (was enabled for $leaving_pkg)"
+    fi
 }
 
 enable_dnd() {
@@ -374,20 +448,33 @@ while true; do
     # ── Write shared foreground pkg for headset_daemon ────────
     echo "$current_pkg" > /dev/.davion_last_fg_pkg 2>/dev/null
 
-    # ── Per-app screen timeout — applies for ALL apps ─────────
-    # (Encore tweaks handle it too for Encore apps via activate_tweaks;
-    #  this block handles ALL other apps that have .screentimeout set)
-    if [ "$current_pkg" != "$_active_pkg" ] || [ -z "$_active_pkg" ]; then
-        # Non-Encore app switch: handle screen timeout independently
-        if [ -z "$current_pkg" ] || [ ! -f "$RR_DIR/$current_pkg.screentimeout" ]; then
-            # New app has no per-app timeout → restore if we had one active
-            [ -n "$_screentimeout_active_pkg" ] && \
-                [ "$_screentimeout_active_pkg" != "$current_pkg" ] && \
+    # ── Per-app screen timeout — fires ONLY on real app change ──
+    # Uses _st_last_fg_pkg (not _active_pkg) so it doesn't fire every loop.
+    # Skips Encore-active apps — activate_tweaks/deactivate_tweaks handle those.
+    if [ "$current_pkg" != "$_st_last_fg_pkg" ]; then
+        _st_last_fg_pkg="$current_pkg"
+        # Only for non-Encore foreground apps
+        if [ "$current_pkg" != "$_active_pkg" ]; then
+            if [ -n "$current_pkg" ] && [ -f "$RR_DIR/$current_pkg.screentimeout" ]; then
+                apply_per_app_screentimeout "$current_pkg"
+            elif [ -n "$_screentimeout_active_pkg" ]; then
                 restore_screentimeout
-        elif [ "$_screentimeout_active_pkg" != "$current_pkg" ]; then
-            # New app has per-app timeout → apply it
-            apply_per_app_screentimeout "$current_pkg"
+            fi
         fi
+    fi
+
+    # ── Per-app Connection on Launch — fires ONLY on real app change ──
+    # Rule: WiFi/Data is enabled ONLY if currently OFF.
+    # If WiFi is already ON (enabled by another app or user), skip — don't touch it.
+    # Restore (disable) ONLY if we were the ones who enabled it.
+    if [ "$current_pkg" != "$_conn_last_fg_pkg" ]; then
+        _prev_conn_pkg="$_conn_last_fg_pkg"
+        _conn_last_fg_pkg="$current_pkg"
+        # Restore conn for the app that just left focus
+        [ -n "$_prev_conn_pkg" ] && restore_conn "$_prev_conn_pkg"
+        # Apply conn for new foreground app (skips if wifi/data already on)
+        [ -n "$current_pkg" ] && [ -f "$RR_DIR/$current_pkg.conn" ] && \
+            apply_per_app_conn "$current_pkg"
     fi
 
     # Nothing changed

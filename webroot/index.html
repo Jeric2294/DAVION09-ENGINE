@@ -655,45 +655,29 @@
             <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             AUTO 60HZ DROP
           </span>
-          <!-- 60Hz Drop + RR Guard controls — two clean rows -->
-          <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-items:flex-end;" onclick="event.stopPropagation()">
-            <!-- Row 1: AUTO 60HZ toggle + gear -->
-            <div style="display:flex;align-items:center;gap:6px;">
-              <span class="mono" style="font-size:8px;color:var(--dim);letter-spacing:.06em;">AUTO 60HZ</span>
-              <button id="btn-idle60-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
-                <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
-                <span class="gaming-toggle-label mono" id="idle60-toggle-label">OFF</span>
-              </button>
-              <!-- Gear for idle delay -->
-              <div style="position:relative;" id="univ-idle60-gear-wrap">
-                <button id="btn-univ-idle60-gear" class="nexus-btn"
-                  style="padding:4px 8px;font-size:10px;"
-                  onclick="event.stopPropagation();_toggleUnivIdle60Gear()"
-                  aria-label="Set idle delay">
-                  <span id="univ-idle60-gear-label">⚙</span>
-                </button>
-                <div id="univ-idle60-gear-popup" style="display:none;position:absolute;right:0;top:calc(100% + 4px);z-index:200;
-                  background:var(--bg3);border:1px solid var(--bdr);border-radius:8px;
-                  padding:8px;min-width:130px;box-shadow:0 4px 16px rgba(0,0,0,0.5);">
-                  <div class="mono" style="font-size:9px;color:var(--dim);letter-spacing:0.1em;margin-bottom:6px;">IDLE DELAY</div>
-                  <div style="display:flex;flex-direction:column;gap:4px;" id="univ-idle60-delay-btns">
-                    <button class="nexus-btn" style="font-size:10px;padding:5px 8px;text-align:left;" data-udelay="2">2s — instant</button>
-                    <button class="nexus-btn" style="font-size:10px;padding:5px 8px;text-align:left;" data-udelay="3">3s — fast</button>
-                    <button class="nexus-btn" style="font-size:10px;padding:5px 8px;text-align:left;" data-udelay="5">5s — normal</button>
-                    <button class="nexus-btn" style="font-size:10px;padding:5px 8px;text-align:left;" data-udelay="8">8s — slow</button>
-                    <button class="nexus-btn" style="font-size:10px;padding:5px 8px;text-align:left;" data-udelay="10">10s — very slow</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <!-- Row 2: RR GUARD toggle -->
-            <div style="display:flex;align-items:center;gap:6px;">
-              <span class="mono" style="font-size:8px;color:var(--dim);letter-spacing:.06em;">RR GUARD</span>
-              <button id="btn-rr-guard-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
-                <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
-                <span class="gaming-toggle-label mono" id="rr-guard-toggle-label">OFF</span>
+          <!-- 60Hz Drop + RR Guard controls — grid layout -->
+          <div style="display:grid;grid-template-columns:auto auto auto;align-items:center;gap:5px 8px;flex-shrink:0;" onclick="event.stopPropagation()">
+            <!-- Row 1: AUTO 60HZ -->
+            <span class="mono" style="font-size:8px;color:var(--dim);letter-spacing:.06em;white-space:nowrap;">AUTO 60HZ</span>
+            <button id="btn-idle60-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="idle60-toggle-label">OFF</span>
+            </button>
+            <div id="univ-idle60-gear-wrap">
+              <button id="btn-univ-idle60-gear" class="nexus-btn"
+                style="padding:4px 8px;font-size:10px;"
+                onclick="event.stopPropagation();_toggleUnivIdle60Gear()"
+                aria-label="Set idle delay">
+                <span id="univ-idle60-gear-label">⚙</span>
               </button>
             </div>
+            <!-- Row 2: RR GUARD -->
+            <span class="mono" style="font-size:8px;color:var(--dim);letter-spacing:.06em;white-space:nowrap;">RR GUARD</span>
+            <button id="btn-rr-guard-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="rr-guard-toggle-label">OFF</span>
+            </button>
+            <div></div>
           </div>
         </summary>
 
@@ -1258,10 +1242,8 @@
           </div>
 
           <!-- ── TOGGLE 1: FRAME STABILITY ────────────────────────── -->
-          <div class="conn-bubble" style="padding:12px 14px;flex-direction:column;gap:10px;">
-
-            <!-- Header row -->
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <details class="adv-details conn-bubble" style="flex-direction:column;align-items:stretch;padding:0;" open>
+            <summary class="adv-summary" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;list-style:none;-webkit-tap-highlight-color:transparent;">
               <div style="display:flex;align-items:center;gap:10px;min-width:0;">
                 <span style="font-size:18px;flex-shrink:0;">🎯</span>
                 <div style="min-width:0;">
@@ -1269,14 +1251,15 @@
                   <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">SF illusion method · phase offsets · 60Hz jitter fix</div>
                 </div>
               </div>
-              <button id="feat-frame-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
-                <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
-                <span class="gaming-toggle-label mono" id="feat-frame-label">OFF</span>
-              </button>
-            </div>
-
-            <!-- Sub-items (what this toggle does) -->
-            <div class="feat-detail-list" id="feat-frame-details" style="display:none;border-top:1px solid var(--bdr);padding-top:8px;display:flex;flex-direction:column;gap:5px;">
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="feat-frame-toggle" class="gaming-toggle-btn" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="feat-frame-label">OFF</span>
+                </button>
+                <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              </div>
+            </summary>
+            <div class="feat-detail-list" id="feat-frame-details" style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:5px;">
               <div class="feat-detail-row">
                 <span class="feat-dot"></span>
                 <span class="mono feat-detail-text">frame_rate_multiple_threshold=120 — keeps 120Hz pipeline at 60Hz display</span>
@@ -1302,23 +1285,11 @@
                 <span class="mono feat-detail-text">min_refresh_rate=90 · peak=120 · Skia GL threaded renderer</span>
               </div>
             </div>
-
-            <!-- Toggle details expand button -->
-            <button id="feat-frame-expand" class="nexus-btn" style="font-size:9px;padding:4px 10px;align-self:flex-start;opacity:0.7;" onclick="
-              const d=document.getElementById('feat-frame-details');
-              const b=document.getElementById('feat-frame-expand');
-              const open=d.style.display!=='none'&&d.style.display!=='';
-              d.style.display=open?'none':'flex';
-              b.textContent=open?'▾ SHOW DETAILS':'▴ HIDE DETAILS';
-            ">▾ SHOW DETAILS</button>
-
-          </div><!-- /frame stability bubble -->
+          </details><!-- /frame stability panel -->
 
           <!-- ── TOGGLE 2: ANTI-THROTTLE BOOST ──────────────────── -->
-          <div class="conn-bubble" style="padding:12px 14px;flex-direction:column;gap:10px;">
-
-            <!-- Header row -->
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <details class="adv-details conn-bubble" style="flex-direction:column;align-items:stretch;padding:0;" open>
+            <summary class="adv-summary" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;list-style:none;-webkit-tap-highlight-color:transparent;">
               <div style="display:flex;align-items:center;gap:10px;min-width:0;">
                 <span style="font-size:18px;flex-shrink:0;">🔥</span>
                 <div style="min-width:0;">
@@ -1326,51 +1297,42 @@
                   <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">Thermal · CPU/GPU floor · FPSGO pacing · powerhal</div>
                 </div>
               </div>
-              <button id="feat-throttle-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
-                <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
-                <span class="gaming-toggle-label mono" id="feat-throttle-label">OFF</span>
-              </button>
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="feat-throttle-toggle" class="gaming-toggle-btn" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="feat-throttle-label">OFF</span>
+                </button>
+                <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              </div>
+            </summary>
+            <div style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:8px;">
+              <div class="mono" id="feat-throttle-warn" style="font-size:8px;color:#f59e0b;padding:4px 8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:6px;display:none;">
+                ⚠ Device may run warmer — disable if overheating
+              </div>
+              <div class="feat-detail-list" id="feat-throttle-details" style="display:flex;flex-direction:column;gap:5px;">
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">vendor.powerhal.dfs.enable=0 — disables dynamic frequency scaling</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">CPU min freq floor 1200MHz · GPU min freq floor 400MHz</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">FPSGO boost_ta=0 — predictable frame pacing (MTK kernel)</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">debug.mali.force_profiling=0 · GPU overhead removed</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">hwui.target_cpu_time_percent=50 · balanced CPU/GPU split</span>
+                </div>
+              </div>
             </div>
-
-            <!-- Warning badge -->
-            <div class="mono" id="feat-throttle-warn" style="font-size:8px;color:#f59e0b;padding:4px 8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:6px;display:none;">
-              ⚠ Device may run warmer — disable if overheating
-            </div>
-
-            <!-- Sub-items -->
-            <div class="feat-detail-list" id="feat-throttle-details" style="display:none;border-top:1px solid var(--bdr);padding-top:8px;flex-direction:column;gap:5px;">
-              <div class="feat-detail-row">
-                <span class="feat-dot"></span>
-                <span class="mono feat-detail-text">vendor.powerhal.dfs.enable=0 — disables dynamic frequency scaling</span>
-              </div>
-              <div class="feat-detail-row">
-                <span class="feat-dot"></span>
-                <span class="mono feat-detail-text">CPU min freq floor 1200MHz · GPU min freq floor 400MHz</span>
-              </div>
-              <div class="feat-detail-row">
-                <span class="feat-dot"></span>
-                <span class="mono feat-detail-text">FPSGO boost_ta=0 — predictable frame pacing (MTK kernel)</span>
-              </div>
-              <div class="feat-detail-row">
-                <span class="feat-dot"></span>
-                <span class="mono feat-detail-text">debug.mali.force_profiling=0 · GPU overhead removed</span>
-              </div>
-              <div class="feat-detail-row">
-                <span class="feat-dot"></span>
-                <span class="mono feat-detail-text">hwui.target_cpu_time_percent=50 · balanced CPU/GPU split</span>
-              </div>
-            </div>
-
-            <!-- Toggle details expand button -->
-            <button id="feat-throttle-expand" class="nexus-btn" style="font-size:9px;padding:4px 10px;align-self:flex-start;opacity:0.7;" onclick="
-              const d=document.getElementById('feat-throttle-details');
-              const b=document.getElementById('feat-throttle-expand');
-              const open=d.style.display!=='none'&&d.style.display!=='';
-              d.style.display=open?'none':'flex';
-              b.textContent=open?'▾ SHOW DETAILS':'▴ HIDE DETAILS';
-            ">▾ SHOW DETAILS</button>
-
-          </div><!-- /anti-throttle bubble -->
+          </details><!-- /anti-throttle panel -->
 
         </div>
       </details>
@@ -1691,5 +1653,40 @@
   <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
   <script src="script.js"></script>
+
+  <!-- ── IDLE DELAY BOTTOM SHEET ─────────────────────────────────────── -->
+  <div id="idle-delay-sheet-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.55);backdrop-filter:blur(2px);" onclick="_closeIdleDelaySheet()"></div>
+  <div id="idle-delay-sheet" style="display:none;position:fixed;left:50%;bottom:0;transform:translateX(-50%);z-index:9001;
+    background:var(--bg2);border:1px solid var(--bdr);border-top-left-radius:16px;border-top-right-radius:16px;
+    width:min(400px,100vw);padding:0 0 24px 0;box-shadow:0 -4px 32px rgba(0,0,0,0.6);">
+    <!-- Handle bar -->
+    <div style="display:flex;justify-content:center;padding:10px 0 6px;">
+      <div style="width:36px;height:4px;border-radius:2px;background:var(--bdr);"></div>
+    </div>
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 18px 12px;">
+      <span class="mono" style="font-size:11px;letter-spacing:0.12em;color:var(--a);font-weight:700;">⚙ IDLE DELAY</span>
+      <button onclick="_closeIdleDelaySheet()" style="background:none;border:none;color:var(--dim);font-size:16px;cursor:pointer;padding:4px 6px;border-radius:6px;">✕</button>
+    </div>
+    <!-- Delay options -->
+    <div style="display:flex;flex-direction:column;gap:6px;padding:0 14px;" id="univ-idle60-delay-btns">
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="2">
+        <span style="color:var(--a);font-weight:700;">2S</span><span style="color:var(--dim);"> — INSTANT</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="3">
+        <span style="color:var(--a);font-weight:700;">3S</span><span style="color:var(--dim);"> — FAST</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="5">
+        <span style="color:var(--a);font-weight:700;">5S</span><span style="color:var(--dim);"> — NORMAL</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="8">
+        <span style="color:var(--a);font-weight:700;">8S</span><span style="color:var(--dim);"> — SLOW</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="10">
+        <span style="color:var(--a);font-weight:700;">10S</span><span style="color:var(--dim);"> — VERY SLOW</span>
+      </button>
+    </div>
+  </div>
+
 </body>
 </html>

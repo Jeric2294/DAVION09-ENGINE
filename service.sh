@@ -494,7 +494,7 @@ fi
 
     # Refresh rate display settings
     settings put system peak_refresh_rate 120.0 2>/dev/null
-    settings put system min_refresh_rate   60.0 2>/dev/null
+    settings put system min_refresh_rate   120.0 2>/dev/null
 
     # MTK FPSGO kernel governor — disable boost_ta for predictable frame pacing
     [ -f /sys/kernel/fpsgo/common/force_onoff ] && \

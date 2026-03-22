@@ -112,6 +112,7 @@ pkill -f "getevent $TS_DEV" 2>/dev/null
                     if [ -n "$_m" ] && [ "$_m" != "0" ]; then
                         # Restore: release min first (avoid frame drop), then SF mode
                         service call SurfaceFlinger 1035 i32 "$_m" >/dev/null 2>&1
+                        settings delete system min_refresh_rate 2>/dev/null
                         touch "$RESTORE_FLAG" 2>/dev/null
                         rm -f "$CACHED_RR" "$IDLE60_FLAG" 2>/dev/null
                     fi
@@ -145,6 +146,7 @@ while true; do
         if [ "$_st" = "SAVE" ]; then
             RR=$(get_restore_mode "$PKG")
             service call SurfaceFlinger 1035 i32 "$RR" >/dev/null 2>&1
+            settings delete system min_refresh_rate 2>/dev/null
             rm -f "$IDLE60_FLAG" "$CACHED_RR" 2>/dev/null
             _st="PERF"; _drop_at=0
             log_msg "app-switch [$PKG] → RR $RR"
@@ -157,6 +159,7 @@ while true; do
         if [ "$_st" = "SAVE" ]; then
             RR=$(get_restore_mode "$PKG")
             service call SurfaceFlinger 1035 i32 "$RR" >/dev/null 2>&1
+            settings delete system min_refresh_rate 2>/dev/null
             rm -f "$IDLE60_FLAG" 2>/dev/null
             _st="PERF"; _drop_at=0
             log_msg "spared [$PKG] → RR $RR"
@@ -186,7 +189,7 @@ DELAYS_FILE="/sdcard/DAVION_ENGINE/idle60_delays.txt"
             printf '%s' "$_target" > "$CACHED_RR" 2>/dev/null
             # Drop to 60Hz: SF mode + settings triple-enforce
             service call SurfaceFlinger 1035 i32 "$MODE_60" >/dev/null 2>&1
-            settings put system min_refresh_rate "$MODE_60" 2>/dev/null &
+            settings put system min_refresh_rate 60.0 2>/dev/null &
             touch "$IDLE60_FLAG" 2>/dev/null
             _st="SAVE"
             _drop_at="$NOW"
@@ -203,6 +206,7 @@ DELAYS_FILE="/sdcard/DAVION_ENGINE/idle60_delays.txt"
             # fallback: heartbeat updated TOUCH_TS but flag write may have raced
             RR=$(get_restore_mode "$PKG")
             service call SurfaceFlinger 1035 i32 "$RR" >/dev/null 2>&1
+            settings delete system min_refresh_rate 2>/dev/null
             rm -f "$IDLE60_FLAG" "$RESTORE_FLAG" "$CACHED_RR" 2>/dev/null
             _st="PERF"; _drop_at=0
             log_msg "touch! [$PKG] → restored RR $RR (fallback)"

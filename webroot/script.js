@@ -2100,18 +2100,42 @@ function _updateScreenTimeoutChips(containerId, activeMsOrNull) {
 }
 
 async function initUniversalScreenTimeout() {
-  const saved = (await exec(`cat ${SCREEN_TIMEOUT_FILE} 2>/dev/null`)).trim();
-  const savedMs = saved && !isNaN(parseInt(saved)) ? parseInt(saved) : null;
-  _univScreenTimeoutMs = savedMs;
-
   const activeEl = document.getElementById('univ-screentimeout-active');
   const applyBtn = document.getElementById('btn-screentimeout-apply');
   const resetBtn = document.getElementById('btn-screentimeout-reset');
 
-  if (activeEl) activeEl.textContent = savedMs ? _msToScreenLabel(savedMs) : '—';
-  if (savedMs) _updateScreenTimeoutChips('univ-screentimeout-chips', savedMs);
+  // ── Load + display current state ──────────────────────────
+  async function _loadState() {
+    const saved = (await exec(`cat ${SCREEN_TIMEOUT_FILE} 2>/dev/null`)).trim();
+    const savedMs = saved && !isNaN(parseInt(saved)) ? parseInt(saved) : null;
+    _univScreenTimeoutMs = savedMs;
+    if (activeEl) activeEl.textContent = savedMs ? _msToScreenLabel(savedMs) : '—';
+    _updateScreenTimeoutChips('univ-screentimeout-chips', savedMs);
+    // Sync selected state so APPLY button label is correct if reopened
+    if (applyBtn) {
+      if (savedMs) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = `⏱ APPLY ${_msToScreenLabel(savedMs)} ›`;
+      } else {
+        applyBtn.disabled = true;
+        applyBtn.textContent = '⏱ SELECT A DURATION ›';
+      }
+    }
+    return savedMs;
+  }
 
-  let _selectedMs = savedMs;
+  // Reload every time the subpanel opens (so it's always fresh)
+  const subpanel = document.getElementById('univ-screen-timeout-section');
+  subpanel?.addEventListener('toggle', () => {
+    if (subpanel.open) _loadState();
+  }, { passive: true });
+
+  // Initial load
+  await _loadState();
+
+  // ── Track selected chip ────────────────────────────────────
+  // Use a module-level ref so Apply always uses the latest selection
+  let _selectedMs = _univScreenTimeoutMs;
 
   document.getElementById('univ-screentimeout-chips')?.addEventListener('click', e => {
     const chip = e.target.closest('.screentimeout-chip');
@@ -2124,24 +2148,34 @@ async function initUniversalScreenTimeout() {
     }
   }, { passive: true });
 
+  // ── Apply ─────────────────────────────────────────────────
   applyBtn?.addEventListener('click', async () => {
-    if (!_selectedMs) return;
-    await exec(`settings put system screen_off_timeout ${_selectedMs}`);
+    if (!_selectedMs || _selectedMs <= 0) {
+      showToast('Select a duration first', 'SCREEN TIMEOUT', 'info', '⏱');
+      return;
+    }
+    applyBtn.disabled = true;
+    applyBtn.textContent = '⏱ APPLYING…';
+    await exec(`settings put system screen_off_timeout ${_selectedMs} 2>/dev/null`);
     await exec(`mkdir -p ${CFG_DIR} && echo "${_selectedMs}" > ${SCREEN_TIMEOUT_FILE}`);
     _univScreenTimeoutMs = _selectedMs;
     if (activeEl) activeEl.textContent = _msToScreenLabel(_selectedMs);
+    applyBtn.disabled = false;
+    applyBtn.textContent = `⏱ APPLY ${_msToScreenLabel(_selectedMs)} ›`;
     showToast(`Screen timeout: ${_msToScreenLabel(_selectedMs)}`, 'SCREEN TIMEOUT', 'success', '⏱');
     autoSave();
   });
 
+  // ── Reset ─────────────────────────────────────────────────
   resetBtn?.addEventListener('click', async () => {
-    await exec('settings put system screen_off_timeout 30000');
+    await exec('settings put system screen_off_timeout 30000 2>/dev/null');
     await exec(`rm -f ${SCREEN_TIMEOUT_FILE}`);
-    _univScreenTimeoutMs = null; _selectedMs = null;
+    _univScreenTimeoutMs = null;
+    _selectedMs = null;
     _updateScreenTimeoutChips('univ-screentimeout-chips', null);
     if (activeEl) activeEl.textContent = '—';
     if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = '⏱ SELECT A DURATION ›'; }
-    showToast('Screen timeout reset to default', 'SCREEN TIMEOUT', 'info', '⏱');
+    showToast('Screen timeout reset to system default', 'SCREEN TIMEOUT', 'info', '⏱');
     autoSave();
   });
 }
@@ -2284,10 +2318,16 @@ async function openPopup(pkg, gearElement, isGame = false) {
   pkgEl.textContent     = pkg;
 
   // Show/hide game-only blocks based on caller context
-  const gameOnlyBlocks = ['popup-encore-block', 'popup-ko-block', 'popup-conn-block'];
+  // Encore is game-only; Kill Others + Connection on Launch work for all apps
+  const gameOnlyBlocks = ['popup-encore-block'];
   gameOnlyBlocks.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = isGame ? '' : 'none';
+  });
+  // Kill Others + Connection on Launch — show for BOTH apps and games
+  ['popup-ko-block', 'popup-conn-block'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = '';
   });
 
 
@@ -4008,7 +4048,7 @@ document.addEventListener('DOMContentLoaded',async()=>{
     document.querySelectorAll('#univ-idle60-delay-btns [data-udelay]').forEach(b =>
       b.classList.toggle('nexus-btn--active', parseInt(b.dataset.udelay) === _idle60Delay)
     );
-    document.getElementById('univ-idle60-gear-popup').style.display = 'none';
+    _closeIdleDelaySheet();
     await exec(`echo '${_idle60Delay}' > ${IDLE60_DELAY_FILE}`);
     if (_idle60Enabled) await _applyIdle60Daemon();
   });
@@ -5664,19 +5704,35 @@ function _toggleIdle60GearPopup() {
 }
 
 function _toggleUnivIdle60Gear() {
-  const popup = document.getElementById('univ-idle60-gear-popup');
-  if (!popup) return;
-  const isOpen = popup.style.display !== 'none';
-  popup.style.display = isOpen ? 'none' : 'block';
-  if (!isOpen) {
-    const close = (e) => {
-      if (!document.getElementById('univ-idle60-gear-wrap')?.contains(e.target)) {
-        popup.style.display = 'none';
-        document.removeEventListener('click', close);
-      }
-    };
-    setTimeout(() => document.addEventListener('click', close), 10);
+  const overlay = document.getElementById('idle-delay-sheet-overlay');
+  const sheet   = document.getElementById('idle-delay-sheet');
+  if (!overlay || !sheet) return;
+  const isOpen = sheet.style.display !== 'none';
+  if (isOpen) {
+    _closeIdleDelaySheet();
+  } else {
+    overlay.style.display = 'block';
+    sheet.style.display   = 'block';
+    // Animate in
+    sheet.style.transition = 'transform 0.25s cubic-bezier(.4,0,.2,1)';
+    sheet.style.transform  = 'translateX(-50%) translateY(100%)';
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        sheet.style.transform = 'translateX(-50%) translateY(0)';
+      });
+    });
   }
+}
+
+function _closeIdleDelaySheet() {
+  const overlay = document.getElementById('idle-delay-sheet-overlay');
+  const sheet   = document.getElementById('idle-delay-sheet');
+  if (!sheet) return;
+  sheet.style.transform = 'translateX(-50%) translateY(100%)';
+  setTimeout(() => {
+    sheet.style.display   = 'none';
+    if (overlay) overlay.style.display = 'none';
+  }, 220);
 }
 
 function renderIdle60List() {
@@ -6061,7 +6117,7 @@ function initGlobalSearch() {
     { icon:'🔊', label:'VOLUME',                    sub:'Universal RR/Brightness/Volume',     badge:'SETTING',
       action: () => scrollToPanel('rr-panel-section', true) },
     { icon:'🎧', label:'HEADSET CONFIGURATION',     sub:'Universal RR → Headset Config',      badge:'SETTING',
-      action: () => scrollToPanel('rr-panel-section', true) },
+      action: () => scrollToPanel('rr-panel-section', true, 'headset-config-section') },
     { icon:'🎧', label:'HEADSET VOLUME',            sub:'Per-App → App/Game Config popup',    badge:'SETTING',
       action: () => scrollToPanel('perapp-rr-section', true) },
     { icon:'🛡', label:'SPARE FROM 60HZ',           sub:'Per-App → App/Game Config popup',    badge:'SETTING',
@@ -6075,7 +6131,7 @@ function initGlobalSearch() {
     { icon:'📶', label:'WIFI · DATA · GPS',         sub:'Connection On Launch',                badge:'SETTING',
       action: () => scrollToPanel('conn-launch-section', true) },
     { icon:'⚙', label:'CPU GOVERNOR PROFILES',     sub:'CPU · Governor & Frequency',          badge:'SETTING',
-      action: () => scrollToPanel('cpu-gov-section', true) },
+      action: () => scrollToPanel('cpu-gov-section', true, 'adv-cpu-profiles') },
     { icon:'🏛', label:'CPU GOVERNOR',              sub:'CPU · Governor & Frequency',          badge:'SETTING',
       action: () => scrollToPanel('cpu-gov-section', true) },
     { icon:'📊', label:'CPU FREQUENCY',             sub:'CPU · Governor & Frequency',          badge:'SETTING',
@@ -6083,9 +6139,9 @@ function initGlobalSearch() {
     { icon:'🖥', label:'GPU FREQUENCY',             sub:'GPU · Frequency Control',             badge:'SETTING',
       action: () => scrollToPanel('gpu-freq-section', true) },
     { icon:'⏱', label:'SCREEN OFF TIMEOUT',        sub:'Universal RR → Screen Off Timeout',   badge:'SETTING',
-      action: () => scrollToPanel('rr-panel-section', true) },
+      action: () => scrollToPanel('rr-panel-section', true, 'univ-screen-timeout-section') },
     { icon:'⏱', label:'SCREEN OFF 30 SECONDS',     sub:'Universal RR → Screen Off Timeout → 30s', badge:'SETTING',
-      action: () => scrollToPanel('rr-panel-section', true) },
+      action: () => scrollToPanel('rr-panel-section', true, 'univ-screen-timeout-section') },
     { icon:'⏱', label:'SCREEN TIMEOUT PER-APP',    sub:'Per-App → App/Game Config popup',     badge:'SETTING',
       action: () => scrollToPanel('perapp-rr-section', true) },
     { icon:'🎨', label:'THEME',                  sub:'Header → ⚙ Gear → Theme picker',   badge:'SETTING',
@@ -6157,24 +6213,41 @@ function initGlobalSearch() {
   }
 
   // ── Scroll panel into view + open it ────────────────────
-  function scrollToPanel(id, open = true) {
+  // scrollToPanel(panelId, open, subpanelId)
+  //   panelId    — the nexus-panel section ID (always scrolled to + glowed)
+  //   open       — whether to open the panel's <details> (default true)
+  //   subpanelId — optional: ID of a nested <details> subpanel to open AND glow instead of the section
+  function scrollToPanel(id, open = true, subId = null) {
     closeSearch();
     const section = document.getElementById(id);
     if (!section) return;
+
+    // Open the parent panel
     const details = section.querySelector('.panel-details');
     if (open && details && !details.open) details.open = true;
-    // Scroll first, then glow once scroll has settled (~350ms)
+
+    // If a subpanel ID given, open it too
+    const subEl = subId ? document.getElementById(subId) : null;
+    if (subEl && !subEl.open) subEl.open = true;
+
+    // Determine the element to scroll to and glow
+    const glowTarget = subEl || section;
+
     setTimeout(() => {
-      section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      glowTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
       setTimeout(() => {
-        // Remove any previous glow so re-searching same panel re-triggers it
+        const glowClass = subEl ? 'adv-details--search-glow' : 'nexus-panel--search-glow';
+
+        // Remove previous glow on ALL possible targets first
         section.classList.remove('nexus-panel--search-glow');
-        // Force reflow so the animation restarts cleanly
-        void section.offsetWidth;
-        section.classList.add('nexus-panel--search-glow');
-        // Clean up class after animation finishes
-        section.addEventListener('animationend', () => {
-          section.classList.remove('nexus-panel--search-glow');
+        section.querySelectorAll('.adv-details--search-glow')
+          .forEach(el => el.classList.remove('adv-details--search-glow'));
+
+        // Force reflow then add glow
+        void glowTarget.offsetWidth;
+        glowTarget.classList.add(glowClass);
+        glowTarget.addEventListener('animationend', () => {
+          glowTarget.classList.remove(glowClass);
         }, { once: true });
       }, 350);
     }, 80);

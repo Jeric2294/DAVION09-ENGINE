@@ -162,7 +162,8 @@ body::before {
 .nexus-header {
   position: sticky; top: 0; z-index: 100;
   padding: 10px 0 6px;
-  background: linear-gradient(to bottom, var(--bg) 75%, transparent 100%);
+  /* Fully opaque — must cover all scrolling content beneath it */
+  background: var(--bg);
 }
 
 .header-bubble-card {
@@ -342,6 +343,24 @@ body::before {
 .nexus-panel--search-glow {
   animation: _panel-search-glow 1.8s ease-out forwards;
 }
+
+/* Subpanel glow — for adv-details nested inside panels */
+@keyframes _subpanel-search-glow {
+  0%   { box-shadow: none; outline: 2px solid transparent; outline-offset: 2px; }
+  15%  { box-shadow: 0 0 0 2px rgba(var(--a-rgb), 0.55),
+                     0 0 16px rgba(var(--a-rgb), 0.20);
+         outline: 2px solid rgba(var(--a-rgb), 0.6);
+         outline-offset: 2px;
+         border-radius: var(--radius); }
+  65%  { box-shadow: 0 0 0 1px rgba(var(--a-rgb), 0.25),
+                     0 0 10px rgba(var(--a-rgb), 0.10);
+         outline: 2px solid rgba(var(--a-rgb), 0.25);
+         outline-offset: 2px; }
+  100% { box-shadow: none; outline: 2px solid transparent; outline-offset: 2px; }
+}
+.adv-details--search-glow {
+  animation: _subpanel-search-glow 1.8s ease-out forwards;
+}
 .panel-summary {
   border-radius: 14px 14px 0 0;
 }
@@ -356,10 +375,10 @@ body::before {
 .panel-header::-webkit-details-marker { display: none; }
 .panel-summary {
   transition: background 0.35s;
-  /* Stick panel title under the main header when panel is open */
   position: sticky;
   top: var(--header-h, 0px);
   z-index: 50;
+  /* Solid opaque background — must cover scrolling content underneath */
   background: var(--bg2);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
@@ -368,8 +387,9 @@ body::before {
   position: relative;
   top: auto;
 }
-.panel-summary:hover { background: rgba(255,255,255,0.035); }
-.panel-summary:active { background: rgba(255,255,255,0.06); }
+/* Keep background solid (opaque) so scrolled content is fully covered */
+.panel-summary:hover  { background: color-mix(in srgb, var(--bg2) 94%, #fff 6%); }
+.panel-summary:active { background: color-mix(in srgb, var(--bg2) 88%, #fff 12%); }
 
 .panel-tag {
   font-size: 10px; font-family: var(--mono); font-weight: 700;
@@ -449,9 +469,22 @@ details[open] > .adv-summary .adv-arrow-icon {
   font-family: var(--mono); text-transform: uppercase;
   list-style: none; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color 0.35s, background 0.15s;
+  /* Stick subpanel title below the panel header when subpanel is open */
+  position: sticky;
+  top: calc(var(--header-h, 0px) + var(--panel-summary-h, 52px));
+  z-index: 40;
+  /* Solid opaque background — covers content scrolling underneath */
+  background: var(--bg2);
+}
+/* Only stick when subpanel is open */
+.adv-details:not([open]) > .adv-summary {
+  position: relative;
+  top: auto;
 }
 .adv-summary::-webkit-details-marker { display: none; }
-.adv-summary:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+/* Keep background solid (opaque) so scrolled content is fully covered */
+.adv-summary:hover  { color: var(--text); background: color-mix(in srgb, var(--bg2) 94%, #fff 6%); }
+.adv-summary:active { background: color-mix(in srgb, var(--bg2) 88%, #fff 12%); }
 /* Bigger arrow for subpanels */
 .adv-details .adv-arrow-icon { width: 22px; height: 22px; }
 .adv-inner { padding: 10px 14px 14px; }

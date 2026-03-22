@@ -11,7 +11,6 @@ sleep 1
 
 echo "$(date '+%T') Starting httpd on :8080..." >> "$LOG"
 
-# No -f flag — let busybox daemonize itself
 "$MODDIR/busybox" httpd \
     -p 8080 \
     -h "$MODDIR/webroot" \

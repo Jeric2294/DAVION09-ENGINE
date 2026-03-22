@@ -1,5 +1,6 @@
 # DAVION09 ENGINE — manifest.txt
 # Format: relative_path download_url
+# Add/remove lines to control which files get updated on Action press
 
 action.sh https://raw.githubusercontent.com/Jeric2294/DAVION09-ENGINE/main/action.sh
 service.sh https://raw.githubusercontent.com/Jeric2294/DAVION09-ENGINE/main/service.sh
