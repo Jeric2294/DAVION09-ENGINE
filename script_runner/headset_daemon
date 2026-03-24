@@ -146,24 +146,32 @@ get_foreground_pkg() {
 apply_vol_for_pkg() {
     local pkg="$1"
 
-    # ── Per-app path ──────────────────────────────────────────
+    # ── Per-app HEADSET volume (highest priority) ─────────────
     if [ -n "$pkg" ] && [ -f "$RR_DIR/${pkg}.hvol_on" ]; then
         local pvol
         pvol=$(cat "$RR_DIR/${pkg}.hvol" 2>/dev/null | tr -d '[:space:]')
         if [ -n "$pvol" ] && [ "$pvol" -ge 0 ] 2>/dev/null && [ "$pvol" -le 100 ] 2>/dev/null; then
             set_vol "$pvol"
-            log_msg "per-app vol → $pvol ($pkg)"
+            log_msg "per-app headset vol → $pvol ($pkg)"
             return 0
         fi
     fi
 
-    # ── Global fallback (original behavior — fully backward-compatible) ───
+    # ── Check if app has regular per-app volume (.vol) ────────
+    # If so, SKIP headset global volume - let per_app_daemon handle it
+    if [ -n "$pkg" ] && [ -f "$RR_DIR/${pkg}.vol" ]; then
+        log_msg "skipped headset global (app has .vol config via per_app_daemon)"
+        return 1
+    fi
+
+    # ── Global headset volume fallback ────────────────────────
+    # Only apply if app has NO per-app volume config at all
     if [ -f "$HEADSET_VOL_ON_FILE" ] && [ -f "$HEADSET_VOL_FILE" ]; then
         local gvol
         gvol=$(cat "$HEADSET_VOL_FILE" 2>/dev/null | tr -d '[:space:]')
         if [ -n "$gvol" ] && [ "$gvol" -ge 0 ] 2>/dev/null && [ "$gvol" -le 100 ] 2>/dev/null; then
             set_vol "$gvol"
-            log_msg "global vol → $gvol (fallback, pkg=${pkg:-unknown})"
+            log_msg "global headset vol → $gvol (fallback, pkg=${pkg:-unknown})"
             return 0
         fi
     fi
