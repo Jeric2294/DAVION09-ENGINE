@@ -12,8 +12,8 @@ LOG="$MODDIR/ota.log"
 BB="$MODDIR/busybox"
 
 GITHUB_USER="Jeric2294"
-GITHUB_REPO="DAVION09-ENGINE"
-BRANCH="master"
+GITHUB_REPO="Python-Project"
+BRANCH="main"
 RAW="https://raw.githubusercontent.com/$GITHUB_USER/$GITHUB_REPO/$BRANCH"
 
 log() { echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG"; }
