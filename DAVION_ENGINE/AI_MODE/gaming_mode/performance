@@ -1,0 +1,93 @@
+#!/system/bin/sh
+# Maximum Performance Script — CK8N Safe Version
+# Based on kr-script/mtk XML logic
+# Targets: mt6983, mt6895, and gpufreqv2-based Dimensity SoCs
+# IMPORTANT: No set -e — all commands must be safe-fail
+
+echo "[+] Applying MAXIMUM PERFORMANCE CONFIG..."
+
+# --- Detect DVFSRC path ---
+dvfsrc_dir=""
+for d in \
+    /sys/devices/platform/soc/1c00f000.dvfsrc \
+    /sys/devices/platform/1c00f000.dvfsrc \
+    /sys/devices/platform/1c013000.dvfsrc \
+    /sys/class/devfreq/mtk-dvfsrc-devfreq; do
+    if [ -d "$d" ]; then dvfsrc_dir="$d"; break; fi
+done
+
+[ -z "$dvfsrc_dir" ] && echo "[!] DVFSRC not found — skipping DDR tuning"
+
+perfmgr=/sys/module/mtk_fpsgo/parameters/perfmgr_enable
+pandora_feas=/sys/module/perfmgr_mtk/parameters/perfmgr_enable
+fpsgo=/sys/kernel/fpsgo/common/fpsgo_enable
+fbt_ceiling=/sys/kernel/fpsgo/fbt/enable_ceiling
+ged_kpi=/sys/module/sspm_v3/holders/ged/parameters/is_GED_KPI_enabled
+dcs_mode=/sys/kernel/ged/hal/dcs_mode
+
+[ -f "$pandora_feas" ] && perfmgr="$pandora_feas"
+
+# Helper: lock_value (no-fail)
+lock_value() {
+    [ -f "$2" ] || return 0
+    chmod 664 "$2" 2>/dev/null
+    echo "$1" > "$2" 2>/dev/null
+    chmod 444 "$2" 2>/dev/null
+}
+
+# 1. Enable Performance Subsystems
+if [ -f "$fpsgo" ]; then
+    echo "[+] Enabling FPSGO..."
+    lock_value 1 "$fpsgo"
+fi
+
+if [ -f "$fbt_ceiling" ]; then
+    echo "[+] Enabling FBT Ceiling..."
+    lock_value 1 "$fbt_ceiling"
+fi
+
+if [ -f "$perfmgr" ]; then
+    echo "[+] Enabling PerfMgr (FEAS)..."
+    [ "$(cat "$fpsgo" 2>/dev/null)" != "1" ] && lock_value 1 "$fpsgo"
+    if [ ! -d /data/adb/modules/dimensity_hybrid_governor ] && [ -f "$ged_kpi" ]; then
+        lock_value 1 "$ged_kpi"
+    fi
+    lock_value 1 "$perfmgr"
+fi
+
+# 2. GPU: Lock to MAX Frequency
+if [ -f /proc/gpufreqv2/stack_signed_opp_table ]; then
+    MAX_FREQ=$(head -n1 /proc/gpufreqv2/stack_signed_opp_table 2>/dev/null | awk '{print $3}' | cut -d',' -f1)
+    if [ -n "$MAX_FREQ" ] && [ "$MAX_FREQ" != "0" ]; then
+        echo "[+] Locking GPU to max: ${MAX_FREQ}KHz"
+        lock_value "$MAX_FREQ" /sys/kernel/ged/hal/custom_upbound_gpu_freq
+        echo -1 > /proc/gpufreqv2/fix_target_opp_index 2>/dev/null
+        echo "0 0" > /proc/gpufreqv2/fix_custom_freq_volt 2>/dev/null
+        if [ -f /sys/kernel/thermal/gpt ]; then
+            echo disable > /sys/kernel/thermal/gpt 2>/dev/null
+        fi
+    fi
+fi
+
+# 3. DDR: Set Min Freq = Max Freq
+if [ -n "$dvfsrc_dir" ]; then
+    dvfsrc="$dvfsrc_dir/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq"
+    if [ -f "$dvfsrc/max_freq" ] && [ -f "$dvfsrc/min_freq" ]; then
+        MAX_DDR=$(cat "$dvfsrc/max_freq" 2>/dev/null)
+        if [ -n "$MAX_DDR" ]; then
+            echo "[+] DDR min freq = max: $MAX_DDR Hz"
+            chmod 664 "$dvfsrc/min_freq" 2>/dev/null
+            echo "$MAX_DDR" > "$dvfsrc/min_freq" 2>/dev/null
+            chmod 444 "$dvfsrc/min_freq" 2>/dev/null
+        fi
+    fi
+fi
+
+# 4. Disable DCS
+if [ -f "$dcs_mode" ]; then
+    echo "[+] Disabling DCS..."
+    lock_value 0 "$dcs_mode"
+fi
+
+echo ""
+echo "MAXIMUM PERFORMANCE ACTIVE"

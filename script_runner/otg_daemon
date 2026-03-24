@@ -1,0 +1,174 @@
+#!/system/bin/sh
+# =============================================================================
+#  OTG AUTO-ENABLE DAEMON — MT6893 / TECNO CK8n  Android 14  kernel 5.10
+#  Detection:  extcon sysfs  +  logcat UsbDeviceManager  +  /dev/uevent
+#  Action:     direct sysfs write → no dialog, no Settings page, no UI tap
+# =============================================================================
+
+LOG="/sdcard/GovThermal/GovThermal.log"
+# Shared state file so all subshells see the same OTG state
+_OTG_STATE_F="/data/local/tmp/_de_otg_state"
+
+log_otg() { echo "[$(date '+%H:%M:%S')] [OTG_DAEMON] $1" >> "$LOG" 2>/dev/null; }
+
+renice -n -5 -p $$ 2>/dev/null
+[ -f /proc/$$/oom_score_adj ] && echo -900 > /proc/$$/oom_score_adj 2>/dev/null
+
+# ── Find USB role switch path once at startup ──────────────────────────────
+ROLE_PATH=""
+for _p in /sys/class/usb_role/*/role; do
+    [ -f "$_p" ] && ROLE_PATH="$_p" && break
+done
+
+OTG_SWITCH="/sys/class/power_supply/usb/otg_switch"
+
+# ── Core enable / disable (pure sysfs — zero UI interaction) ──────────────
+_enable_otg() {
+    # Prevent double-fire
+    [ "$(cat "$_OTG_STATE_F" 2>/dev/null)" = "1" ] && return 0
+    echo 1 > "$_OTG_STATE_F" 2>/dev/null
+
+    # 1. Settings keys (Android settings db)
+    settings put global usb_otg_enabled   1 2>/dev/null
+    settings put system  otg_connect      1 2>/dev/null
+    settings put global  otg_enable       1 2>/dev/null
+    settings put secure  usb_otg_enabled  1 2>/dev/null
+
+    # 2. Sysprops (MTK vendor hal reads these)
+    setprop vendor.usb.otg_mode          1 2>/dev/null
+    setprop sys.usb.otg_enable           1 2>/dev/null
+    setprop persist.vendor.usb.otg       1 2>/dev/null
+    setprop persist.sys.is_otg_enabled   true 2>/dev/null
+
+    # 3. usb_role sysfs — kernel-level host mode
+    [ -n "$ROLE_PATH" ] && echo host > "$ROLE_PATH" 2>/dev/null
+
+    # 4. otg_switch — some MTK boards use this instead of role
+    [ -f "$OTG_SWITCH" ] && echo 1 > "$OTG_SWITCH" 2>/dev/null
+
+    # 5. Legacy dual_role / usb_otg nodes
+    for _n in /sys/class/usb_otg/otg0/mode \
+               /sys/class/dual_role_usb/otg_default/mode; do
+        [ -f "$_n" ] && echo host > "$_n" 2>/dev/null
+    done
+
+    # 6. dr_mode debugfs (some kernels)
+    echo host > /sys/kernel/debug/usb/dr_mode 2>/dev/null || true
+
+    log_otg "ENABLED — role_path=$ROLE_PATH"
+}
+
+_disable_otg() {
+    [ "$(cat "$_OTG_STATE_F" 2>/dev/null)" = "0" ] && return 0
+    echo 0 > "$_OTG_STATE_F" 2>/dev/null
+
+    settings put global usb_otg_enabled  0 2>/dev/null
+    setprop vendor.usb.otg_mode          0 2>/dev/null
+    setprop sys.usb.otg_enable           0 2>/dev/null
+
+    [ -n "$ROLE_PATH" ] && echo device > "$ROLE_PATH" 2>/dev/null
+    [ -f "$OTG_SWITCH" ] && echo 0 > "$OTG_SWITCH" 2>/dev/null
+
+    echo peripheral > /sys/kernel/debug/usb/dr_mode 2>/dev/null || true
+    log_otg "DISABLED — restored device mode"
+}
+
+# ── Hardware OTG presence check via extcon ────────────────────────────────
+is_otg_hw_present() {
+    # Numbered extcon nodes
+    for _i in 0 1 2 3 4 5; do
+        [ -f "/sys/class/extcon/extcon$_i/state" ] || continue
+        cat "/sys/class/extcon/extcon$_i/state" 2>/dev/null \
+            | grep -qiE "USB-HOST=1|ID=1" && return 0
+    done
+    # Named extcon nodes (MTK common names)
+    for _n in usb-otg mtk-usb mtk-otg mtk-id typec usb; do
+        [ -f "/sys/class/extcon/$_n/state" ] || continue
+        cat "/sys/class/extcon/$_n/state" 2>/dev/null \
+            | grep -qiE "USB-HOST=1|ID=1" && return 0
+    done
+    # Fallback: role is already host (set by us or kernel)
+    cat /sys/class/usb_role/*/role 2>/dev/null | grep -qi host && return 0
+    return 1
+}
+
+cleanup() {
+    log_otg "stopped (PID $$)"
+    kill "$_LOGCAT_PID" "$_UEVENT_PID" 2>/dev/null
+    rm -f "$_OTG_STATE_F"
+    exit 0
+}
+trap cleanup INT TERM EXIT
+
+# ── Initial state ─────────────────────────────────────────────────────────
+echo "?" > "$_OTG_STATE_F" 2>/dev/null   # sentinel so first check always fires
+
+if is_otg_hw_present; then
+    log_otg "boot: OTG already present — enabling immediately"
+    _enable_otg
+else
+    echo 0 > "$_OTG_STATE_F" 2>/dev/null
+    log_otg "boot: no OTG device"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  LAYER 1 — /dev/uevent  (kernel netlink → real-time, zero latency)
+#  busybox-compatible: pipe cat through tr to convert null terminators
+# ═══════════════════════════════════════════════════════════════════════════
+(
+    cat /dev/uevent 2>/dev/null | tr '\0' '\n' | while IFS= read -r _ev; do
+        # Only process extcon / usb / power_supply events
+        case "$_ev" in
+            SUBSYSTEM=extcon|SUBSYSTEM=usb|SUBSYSTEM=power_supply|*usb_role*) ;;
+            *USB-HOST*|*USB_ID*|*otg*|*OTG*)                                  ;;
+            *) continue ;;
+        esac
+
+        # OTG connected signals
+        if echo "$_ev" | grep -qiE \
+           "USB-HOST=1|SWITCH_STATE=1|ACTION=add.*usb|USB_ID=0|HOST=1"; then
+            [ "$(cat "$_OTG_STATE_F" 2>/dev/null)" != "1" ] && _enable_otg
+        # OTG disconnected signals
+        elif echo "$_ev" | grep -qiE \
+           "USB-HOST=0|SWITCH_STATE=0|ACTION=remove.*usb|USB_ID=1|HOST=0"; then
+            [ "$(cat "$_OTG_STATE_F" 2>/dev/null)" != "0" ] && _disable_otg
+        fi
+    done
+) &
+_UEVENT_PID=$!
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  LAYER 2 — logcat  (Android framework USB events — catches what extcon misses)
+# ═══════════════════════════════════════════════════════════════════════════
+logcat -b main -b system --line-buffered \
+    -s UsbDeviceManager:V UsbHostManager:V UsbPortManager:V \
+    2>/dev/null | while IFS= read -r _line; do
+
+    # Connect signals
+    if echo "$_line" | grep -qiE \
+       "hostConnected.*true|USB host mode|setCurrentFunction.*host|OTG.*attach|OTG.*plugged|USB_STATE.*HOST"; then
+        [ "$(cat "$_OTG_STATE_F" 2>/dev/null)" != "1" ] && _enable_otg
+
+    # Disconnect signals
+    elif echo "$_line" | grep -qiE \
+       "hostConnected.*false|OTG.*detach|OTG.*unplug|USB_STATE.*DEVICE|setCurrentFunction.*charging"; then
+        # Verify with sysfs before disabling (avoid false negatives)
+        sleep 0.4
+        is_otg_hw_present || {
+            [ "$(cat "$_OTG_STATE_F" 2>/dev/null)" != "0" ] && _disable_otg
+        }
+    fi
+done &
+_LOGCAT_PID=$!
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  LAYER 3 — extcon polling  (1s interval — catches anything layers 1&2 miss)
+# ═══════════════════════════════════════════════════════════════════════════
+while true; do
+    sleep 1
+    if is_otg_hw_present; then _cur="1"; else _cur="0"; fi
+    _prev="$(cat "$_OTG_STATE_F" 2>/dev/null)"
+    if [ "$_cur" != "$_prev" ]; then
+        if [ "$_cur" = "1" ]; then _enable_otg; else _disable_otg; fi
+    fi
+done

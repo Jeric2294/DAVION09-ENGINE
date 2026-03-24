@@ -1,0 +1,1977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>DAVION°ENGINE · JERIC APARICIO</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="theme-black">
+
+  <canvas id="glCanvas" aria-hidden="true"></canvas>
+
+  <!-- Scanline overlay -->
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <div class="main">
+
+    <!-- ═══════════ HEADER ═══════════ -->
+    <header class="nexus-header">
+
+      <!-- ── HEADER BUBBLE CARD ── -->
+      <div class="header-bubble-card">
+
+        <!-- Row 1: Title left, Save/Load/Gear right -->
+        <div class="header-bubble-top">
+          <div class="header-eyebrow mono" style="font-size:17px;letter-spacing:0.1em;opacity:0.95;font-weight:800;white-space:nowrap;flex:1;min-width:0;">DAVION°ENGINE</div>
+          <div class="header-controls" style="flex-shrink:0;">
+            <!-- Browser button — moved from gear dropdown to header -->
+            <button id="fab-menu-browser" class="save-btn" aria-label="Open in browser">
+              <svg class="fab-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M12 3c-2.5 2.5-4 5.5-4 9s1.5 6.5 4 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                <path d="M12 3c2.5 2.5 4 5.5 4 9s-1.5 6.5-4 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                <line x1="4.5" y1="7.5" x2="19.5" y2="7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                <line x1="4.5" y1="16.5" x2="19.5" y2="16.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </button>
+            <button id="btn-save-config" class="save-btn" aria-label="Save config">
+              <span class="save-icon">◈</span>
+              <span class="save-label">SAVE</span>
+            </button>
+            <button id="btn-load-config" class="save-btn features-btn" aria-label="Load config">
+              <span class="save-icon">⬡</span>
+              <span class="save-label">LOAD</span>
+            </button>
+
+            <!-- Gear button — inline with SAVE/LOAD -->
+            <div class="hdr-gear-wrap" id="hdr-gear-wrap">
+              <button class="save-btn hdr-gear-btn" id="fab-settings-btn" aria-label="Settings" aria-expanded="false">
+                <svg class="fab-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <!-- Dropdown menu -->
+              <div class="fab-menu" id="fab-menu" aria-hidden="true">
+                <button class="fab-menu-item" id="fab-menu-theme">
+                  <span class="fab-menu-icon">🎨</span>
+                  <span class="fab-menu-label mono">THEME</span>
+                </button>
+                <button class="fab-menu-item" id="fab-menu-refresh">
+                  <span class="fab-menu-icon">🔄</span>
+                  <span class="fab-menu-label mono">REFRESH</span>
+                </button>
+
+                <button class="fab-menu-item" id="fab-menu-toast" aria-pressed="true">
+                  <span class="fab-menu-icon" id="fab-toast-icon">🔔</span>
+                  <span class="fab-menu-label mono" id="fab-toast-label">TOAST ON</span>
+                </button>
+                <button class="fab-menu-item" id="fab-menu-ko" aria-pressed="true">
+                  <span class="fab-menu-icon" id="fab-ko-icon">⏹</span>
+                  <span class="fab-menu-label mono" id="fab-ko-label">KILL OTHERS ON</span>
+                </button>
+                <button class="fab-menu-item" id="fab-menu-cache" aria-pressed="true">
+                  <span class="fab-menu-icon" id="fab-cache-icon">🗑</span>
+                  <span class="fab-menu-label mono" id="fab-cache-label">CLEAR CACHE ON</span>
+                </button>
+                <div class="fab-menu-divider"></div>
+                <button class="fab-menu-item fab-menu-exit" id="fab-menu-exit">
+                  <span class="fab-menu-icon">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block;">
+                      <path d="M15 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H15" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <polyline points="10 17 15 12 10 7" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <line x1="15" y1="12" x2="3" y2="12" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                  </span>
+                  <span class="fab-menu-label mono">EXIT</span>
+                </button>
+              </div>
+              <!-- Theme picker bubble -->
+              <div class="fab-theme-bubble" id="fab-theme-bubble" aria-hidden="true">
+                <div class="fab-theme-bubble-title mono">THEME</div>
+                <div class="fab-theme-swatches">
+                  <button class="t-btn t-volt"   data-theme="volt"   title="Volt"></button>
+                  <button class="t-btn t-cyan"   data-theme="cyan"   title="Cyan"></button>
+                  <button class="t-btn t-red"    data-theme="red"    title="Red"></button>
+                  <button class="t-btn t-amber"  data-theme="amber"  title="Amber"></button>
+                  <button class="t-btn t-yellow" data-theme="yellow" title="Yellow"></button>
+                  <button class="t-btn t-violet" data-theme="violet" title="Violet"></button>
+                  <button class="t-btn t-dark"   data-theme="dark"   title="Dark"></button>
+                  <button class="t-btn t-black"  data-theme="black"  title="Black"></button>
+                </div>
+                <div class="fab-theme-active-name mono" id="active-theme-name">VOLT</div>
+              </div>
+            </div>
+          </div>
+        </div><!-- /.header-bubble-top -->
+
+        <!-- Row 2: Banner left, Connectivity right — same height -->
+        <div class="header-bubble-bottom">
+            <div class="hdr-banner" aria-hidden="false">
+              <svg class="hdr-banner-svg" viewBox="0 0 220 72" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+                <defs>
+                  <linearGradient id="hb-line" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%"   stop-color="currentColor" stop-opacity="0"/>
+                    <stop offset="30%"  stop-color="currentColor" stop-opacity="0.7"/>
+                    <stop offset="70%"  stop-color="currentColor" stop-opacity="0.7"/>
+                    <stop offset="100%" stop-color="currentColor" stop-opacity="0"/>
+                  </linearGradient>
+                  <linearGradient id="hb-bar" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%"   stop-color="currentColor" stop-opacity="0.9"/>
+                    <stop offset="100%" stop-color="currentColor" stop-opacity="0.15"/>
+                  </linearGradient>
+                  <linearGradient id="hb-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%"   stop-color="currentColor" stop-opacity="0.07"/>
+                    <stop offset="100%" stop-color="currentColor" stop-opacity="0.01"/>
+                  </linearGradient>
+                  <filter id="hb-glow">
+                    <feGaussianBlur stdDeviation="1.2" result="b"/>
+                    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+                  </filter>
+                </defs>
+
+                <!-- Card bg -->
+                <rect x="0.5" y="0.5" width="219" height="71" rx="4.5"
+                  fill="url(#hb-bg)" stroke="currentColor" stroke-opacity="0.14" stroke-width="1"/>
+
+                <!-- Top accent glow line -->
+                <rect x="0" y="0" width="220" height="1.5" rx="1" fill="url(#hb-line)"/>
+
+                <!-- Left accent bar -->
+                <rect x="0" y="0" width="3" height="72" rx="1.5" fill="url(#hb-bar)"/>
+
+                <!-- Circuit dots -->
+                <circle cx="9"   cy="10" r="1.8" fill="currentColor" opacity="0.5"/>
+                <circle cx="9"   cy="62" r="1.4" fill="currentColor" opacity="0.25"/>
+                <circle cx="211" cy="36" r="1.2" fill="currentColor" opacity="0.2"/>
+
+                <!-- Dashed traces -->
+                <line x1="12" y1="10" x2="90" y2="10"
+                  stroke="currentColor" stroke-opacity="0.18" stroke-width="0.7" stroke-dasharray="4 3"/>
+                <line x1="12" y1="62" x2="65" y2="62"
+                  stroke="currentColor" stroke-opacity="0.12" stroke-width="0.7" stroke-dasharray="3 4"/>
+                <line x1="209" y1="14" x2="209" y2="58"
+                  stroke="currentColor" stroke-opacity="0.1" stroke-width="0.7" stroke-dasharray="3 4"/>
+
+                <!-- Top label -->
+                <text x="15" y="25"
+                  font-family="'Fira Code',monospace" font-size="7" font-weight="600"
+                  fill="currentColor" opacity="0.45" letter-spacing="3">CREDITS</text>
+
+                <!-- Main credit line 1 -->
+                <text x="15" y="40"
+                  font-family="'Fira Code',monospace" font-size="11.5" font-weight="700"
+                  fill="currentColor" opacity="0.92" letter-spacing="0.5" filter="url(#hb-glow)">JERIC APARICIO</text>
+
+                <!-- Main credit line 2 -->
+                <text x="15" y="53"
+                  font-family="'Fira Code',monospace" font-size="8" font-weight="500"
+                  fill="currentColor" opacity="0.55" letter-spacing="0.5">Encore by Rem01Gaming</text>
+
+                <!-- Main credit line 3 (new) -->
+                <text x="15" y="65"
+                  font-family="'Fira Code',monospace" font-size="7.5" font-weight="500"
+                  fill="currentColor" opacity="0.45" letter-spacing="0.5">MTK_AI Owner</text>
+
+                <!-- Right badge — POWERED ENCORE (top-right, no overlap) -->
+                <rect x="160" y="3" width="56" height="36" rx="4"
+                  fill="currentColor" fill-opacity="0.1"
+                  stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+                <rect x="162" y="5" width="52" height="32" rx="3"
+                  fill="none" stroke="currentColor" stroke-opacity="0.12" stroke-width="0.5"/>
+                <text x="188" y="18"
+                  font-family="'Fira Code',monospace" font-size="7" font-weight="600"
+                  fill="currentColor" opacity="0.5" letter-spacing="1.5" text-anchor="middle">POWERED</text>
+                <text x="188" y="31"
+                  font-family="'Fira Code',monospace" font-size="11" font-weight="800"
+                  fill="currentColor" opacity="0.88" letter-spacing="1" text-anchor="middle" filter="url(#hb-glow)">ENCORE</text>
+                <!-- pulse bars — sit below badge with clear gap -->
+                <rect x="163" y="45" width="3" height="8"  rx="1" fill="currentColor" opacity="0.38"/>
+                <rect x="168" y="42" width="3" height="11" rx="1" fill="currentColor" opacity="0.52"/>
+                <rect x="173" y="47" width="3" height="6"  rx="1" fill="currentColor" opacity="0.30"/>
+                <rect x="178" y="43" width="3" height="10" rx="1" fill="currentColor" opacity="0.48"/>
+                <rect x="183" y="48" width="3" height="5"  rx="1" fill="currentColor" opacity="0.25"/>
+                <rect x="188" y="45" width="3" height="8"  rx="1" fill="currentColor" opacity="0.35"/>
+                <rect x="193" y="43" width="3" height="10" rx="1" fill="currentColor" opacity="0.42"/>
+                <rect x="198" y="47" width="3" height="6"  rx="1" fill="currentColor" opacity="0.28"/>
+              </svg>
+            </div>
+          <!-- Connectivity bubble: WiFi / Data / GPS -->
+          <div class="conn-bubble" id="conn-bubble" aria-label="Connectivity Toggles" style="flex-shrink:0;align-self:stretch;">
+            <button class="conn-btn" id="conn-wifi" role="button" tabindex="0" aria-label="Toggle WiFi" aria-pressed="true" title="WiFi">
+              <svg class="conn-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 12.55a11 11 0 0 1 14.08 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.42 9a16 16 0 0 1 21.16 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M8.53 16.11a6 6 0 0 1 6.95 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="12" cy="20" r="1" fill="currentColor"/>
+              </svg>
+              <span class="conn-label mono" id="conn-wifi-label">WIFI</span>
+              <span class="conn-state-dot" id="conn-wifi-dot"></span>
+            </button>
+            <div class="conn-divider"></div>
+            <button class="conn-btn" id="conn-data" role="button" tabindex="0" aria-label="Toggle Mobile Data" aria-pressed="true" title="Mobile Data">
+              <svg class="conn-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="2" y="13" width="4" height="8" rx="1" fill="currentColor" opacity="0.5"/>
+                <rect x="9" y="9"  width="4" height="12" rx="1" fill="currentColor" opacity="0.75"/>
+                <rect x="16" y="4" width="4" height="17" rx="1" fill="currentColor"/>
+              </svg>
+              <span class="conn-label mono" id="conn-data-label">DATA</span>
+              <span class="conn-state-dot" id="conn-data-dot"></span>
+            </button>
+            <div class="conn-divider"></div>
+            <button class="conn-btn" id="conn-loc" role="button" tabindex="0" aria-label="Toggle GPS / Location" aria-pressed="true" title="GPS / Location">
+              <svg class="conn-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="12" cy="10" r="3" stroke="currentColor" stroke-width="1.8"/>
+              </svg>
+              <span class="conn-label mono" id="conn-loc-label">GPS</span>
+              <span class="conn-state-dot" id="conn-loc-dot"></span>
+            </button>
+          </div>
+        </div><!-- /.header-bubble-bottom -->
+
+        <!-- Global Search Bubble -->
+        <div class="global-search-bubble" id="global-search-bubble">
+          <span class="global-search-icon mono" aria-hidden="true">⌕</span>
+          <input
+            id="global-search-input"
+            class="global-search-input"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Search panels, settings, apps…"
+            aria-label="Global search"
+          >
+          <button id="global-search-clear" class="global-search-clear" aria-label="Clear search" hidden>✕</button>
+        </div>
+        <!-- Search suggestions dropdown -->
+        <div id="global-search-results" class="global-search-results" hidden></div>
+
+        <!-- Pills row inside bubble card -->
+        <div class="stats-bar stats-bar--under-title header-pills-row">
+          <div class="stat-pill" id="stat-services" role="button" tabindex="0" aria-label="Toggle AI Services">
+            <span class="stat-pill-label mono">AI SVC</span>
+            <span id="mon_services" class="stat-pill-val on">ON</span>
+          </div>
+          <div class="stat-pill" id="stat-overlay" role="button" tabindex="0" aria-label="Toggle Overlay">
+            <span class="stat-pill-label mono">OVERLAY</span>
+            <span id="mon_overlay" class="stat-pill-val on">ON</span>
+          </div>
+          <div class="stat-pill" id="stat-detect" role="button" tabindex="0" aria-label="Toggle Detection">
+            <span class="stat-pill-label mono">DETECT</span>
+            <span id="detection-status" class="stat-pill-val on">Logcat</span>
+          </div>
+        </div>
+
+      </div><!-- /.header-bubble-card -->
+
+      <!-- DEVICE INFO STRIP — full-width row 2, card-style tiles -->
+      <div class="hdi-strip">
+        <div class="hdi-tile">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">SOC</span>
+            <span class="hdi-val" id="hsi-cpu">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">PROFILE</span>
+            <span class="hdi-val" id="hsi-freq">—</span>
+          </div>
+          <span class="hdi-badge" id="hsi-freq-bar"></span>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile" id="hdi-tile-therm">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">THERMAL</span>
+            <span class="hdi-val" id="hsi-therm">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile" id="hdi-tile-temp">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">TEMP</span>
+            <span class="hdi-val" id="hsi-temp">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile" id="hdi-tile-disp">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">DISPLAY</span>
+            <span class="hdi-val" id="hsi-disp">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile" id="hdi-tile-gpu">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">GPU</span>
+            <span class="hdi-val" id="hsi-gpu">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">GOVERNOR</span>
+            <span class="hdi-val" id="hsi-ctrl">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">I/O</span>
+            <span class="hdi-val" id="hsi-io">—</span>
+          </div>
+        </div>
+        <div class="hdi-divider"></div>
+        <div class="hdi-tile">
+          <div class="hdi-body">
+            <span class="hdi-label glow-label">FREQ LIM</span>
+            <span class="hdi-val" id="hsi-freqlim">—</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Status ticker -->
+    <div class="status-bar" id="main-status-bar">
+      <span class="status-bracket">[</span>
+      <span id="debug-msg" class="status-text mono"><span class="status-text-inner" id="debug-msg-inner">SYS READY · MODULE ONLINE</span></span>
+      <span class="status-bracket">]</span>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════
+         PANEL 01 · GAME LIST
+         ══════════════════════════════════════════════════ -->
+    <section class="nexus-panel" id="game-list-section" data-pnum="01">
+      <details class="panel-details">
+        <summary class="panel-header panel-summary">
+          <div class="panel-tag panel-icon">🎮</div>
+          <div class="panel-title-wrap">
+            <div class="panel-title">GAME LIST · GAME CONFIGURATION</div>
+            <div class="panel-subtitle">Per-app gaming tweaks & profiles</div>
+          </div>
+          <span class="panel-status-dot" aria-hidden="true"></span>
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        </summary>
+        <div class="panel-body">
+          <!-- Search sticky -->
+          <div class="panel-controls-sticky">
+          </div>
+          <!-- App list -->
+          <div id="gl-app-list" class="app-list">
+            <span class="list-placeholder mono">Open this panel to detect games</span>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ═══════════ CPU GOVERNOR ═══════════ -->
+    <section class="nexus-panel" id="cpu-gov-section" data-pnum="02">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">⚡</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">CPU · GOVERNOR &amp; FREQUENCY</div>
+          <div class="panel-subtitle">Governor, profiles &amp; freq scale</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+
+      <!-- Live metrics -->
+      <div class="metrics-row">
+        <div class="metric-cell">
+          <div class="metric-label mono">GOVERNOR</div>
+          <div class="metric-val" id="cpu-gov-val">—</div>
+        </div>
+        <div class="metric-divider"></div>
+        <div class="metric-cell">
+          <div class="metric-label mono">FREQ CAP</div>
+          <div class="metric-val" id="cpu-freq-val">—</div>
+        </div>
+        <div class="metric-divider"></div>
+        <div class="metric-cell">
+          <div class="metric-label mono">I/O SCHED</div>
+          <div class="metric-val" id="cpu-io-val">—</div>
+        </div>
+      </div>
+
+      <!-- Freq scale -->
+      <details class="adv-details slider-details">
+      <summary class="adv-summary mono slider-summary">
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="mono slider-key">FREQ LIMIT</span>
+        <span id="freq-scale-display" class="freq-badge mono">100%</span>
+      </summary>
+      <div class="slider-block slider-block--inner">
+        <div class="slider-track-wrap">
+          <input type="range" id="freq-scale-slider" class="nexus-slider" min="30" max="100" step="10" value="100">
+        </div>
+        <div class="slider-ticks mono">
+          <span class="stk" data-val="30">30%</span>
+          <span class="stk" data-val="50">50%</span>
+          <span class="stk" data-val="70">70%</span>
+          <span class="stk" data-val="100">100%</span>
+        </div>
+        <button id="btn-apply-freq-scale" class="nexus-btn nexus-btn--full">APPLY FREQ LIMIT ›</button>
+      </div>
+      </details>
+
+      <!-- CPU Governor Profiles — detection-based -->
+      <details class="adv-details" id="adv-cpu-profiles">
+        <summary class="adv-summary mono">
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          CPU GOVERNOR PROFILES
+        </summary>
+        <div class="adv-inner" id="cpu-profiles-inner">
+
+          <!-- Detection ribbon -->
+          <div class="gaming-status-ribbon" style="margin-bottom:10px;">
+            <span class="mono gaming-ribbon-icon">⚙</span>
+            <span class="mono gaming-ribbon-text" id="cpu-profiles-status">Open to detect…</span>
+          </div>
+
+          <!-- Detected cluster info -->
+          <div id="cpu-cluster-info" style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;"></div>
+
+          <!-- Profile cards -->
+          <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;" id="cpu-profile-cards">
+
+            <div class="conn-bubble cpu-profile-card" id="cpuprof-responsive" data-cpuprof="responsive" style="padding:10px 12px;cursor:pointer;">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                <div style="min-width:0;flex:1;">
+                  <div class="mono" style="font-size:10px;color:var(--fg);letter-spacing:.06em;">🚀 ULTRA SMOOTH</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">schedutil all clusters · instant up · slow down 20ms · anti FPS drop</div>
+                  <div class="mono cpu-prof-detail" id="cpuprof-responsive-detail" style="font-size:8px;color:var(--a);margin-top:5px;line-height:1.5;display:none;word-break:break-word;"></div>
+                </div>
+                <span class="mono cpu-prof-badge" id="cpuprof-responsive-badge" style="font-size:8px;color:var(--dim);flex-shrink:0;text-align:right;max-width:90px;word-break:break-all;">—</span>
+              </div>
+            </div>
+
+            <div class="conn-bubble cpu-profile-card" id="cpuprof-balanced" data-cpuprof="balanced" style="padding:10px 12px;cursor:pointer;">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                <div style="min-width:0;flex:1;">
+                  <div class="mono" style="font-size:10px;color:var(--fg);letter-spacing:.06em;">⚖ BALANCED DAILY</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">schedutil all clusters · fast up 85µs · slow down 10ms · best daily</div>
+                  <div class="mono cpu-prof-detail" id="cpuprof-balanced-detail" style="font-size:8px;color:var(--a);margin-top:5px;line-height:1.5;display:none;word-break:break-word;"></div>
+                </div>
+                <span class="mono cpu-prof-badge" id="cpuprof-balanced-badge" style="font-size:8px;color:var(--dim);flex-shrink:0;text-align:right;max-width:90px;word-break:break-all;">—</span>
+              </div>
+            </div>
+
+            <div class="conn-bubble cpu-profile-card" id="cpuprof-latency" data-cpuprof="latency" style="padding:10px 12px;cursor:pointer;">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                <div style="min-width:0;flex:1;">
+                  <div class="mono" style="font-size:10px;color:var(--fg);letter-spacing:.06em;">⚡ PERFORMANCE GAMING</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">performance all clusters · max freq · no throttle · input boost off</div>
+                  <div class="mono cpu-prof-detail" id="cpuprof-latency-detail" style="font-size:8px;color:var(--a);margin-top:5px;line-height:1.5;display:none;word-break:break-word;"></div>
+                </div>
+                <span class="mono cpu-prof-badge" id="cpuprof-latency-badge" style="font-size:8px;color:var(--dim);flex-shrink:0;text-align:right;max-width:90px;word-break:break-all;">—</span>
+              </div>
+            </div>
+
+            <div class="conn-bubble cpu-profile-card" id="cpuprof-battery" data-cpuprof="battery" style="padding:10px 12px;cursor:pointer;">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                <div style="min-width:0;flex:1;">
+                  <div class="mono" style="font-size:10px;color:var(--fg);letter-spacing:.06em;">🔋 BATTERY SAVER</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">schedutil little · powersave mid+big · no lag version</div>
+                  <div class="mono cpu-prof-detail" id="cpuprof-battery-detail" style="font-size:8px;color:var(--a);margin-top:5px;line-height:1.5;display:none;word-break:break-word;"></div>
+                </div>
+                <span class="mono cpu-prof-badge" id="cpuprof-battery-badge" style="font-size:8px;color:var(--dim);flex-shrink:0;text-align:right;max-width:90px;word-break:break-all;">—</span>
+              </div>
+            </div>
+
+          </div>
+
+          <button id="btn-apply-cpu-profile" class="nexus-btn nexus-btn--full" disabled>⚙ SELECT A PROFILE TO APPLY ›</button>
+
+        </div>
+      </details>
+
+
+      </details>
+    </section>
+
+    <!-- ═══════════ THERMAL PANEL ═══════════ -->
+
+    <!-- ═══════════ GPU FREQUENCY CONTROL ═══════════ -->
+    <section class="nexus-panel" id="gpu-freq-section" data-pnum="03">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">🖥️</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">GPU · FREQUENCY CONTROL</div>
+          <div class="panel-subtitle">OPP lock &amp; frequency history</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+      <div style="padding:12px 14px 16px;">
+
+        <!-- Live metrics -->
+        <div class="metrics-row" style="margin-bottom:12px;">
+          <div class="metric-cell">
+            <div class="metric-label mono">GPU FREQ</div>
+            <div class="metric-val" id="gpu-opp-val">— MHz</div>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-cell">
+            <div class="metric-label mono">OPP INDEX</div>
+            <div class="metric-val" id="gpu-opp-index-val">—</div>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-cell">
+            <div class="metric-label mono">STATUS</div>
+            <div class="metric-val" id="gpu-lock-status">FREE</div>
+          </div>
+        </div>
+
+        <!-- Slider -->
+        <div class="gpu-slider-block">
+          <div class="gpu-slider-header">
+            <span class="gpu-slider-title mono">OPP LEVEL — LOWER = HIGHER FREQ</span>
+          </div>
+          <div class="gpu-slider-track-wrap" style="display:flex;align-items:center;gap:6px;">
+            <button class="clb-step-btn mono" id="gpu-opp-dec" aria-label="Decrease GPU freq">−</button>
+            <input type="range" id="gpu-opp-slider" class="nexus-slider" min="0" max="32" step="1" value="0" style="flex:1;">
+            <button class="clb-step-btn mono" id="gpu-opp-inc" aria-label="Increase GPU freq">+</button>
+          </div>
+          <div id="gpu-frequency-labels" class="slider-ticks mono" style="display:flex;justify-content:space-between;font-size:10px;margin-top:4px;">
+            <span>Max</span><span>Min</span>
+          </div>
+        </div>
+
+        <!-- Apply + Unlock buttons -->
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button id="btn-apply-gpu" class="nexus-btn nexus-btn--full">⚡ APPLY GPU LOCK ›</button>
+          <button id="btn-unlock-gpu" class="nexus-btn" style="flex-shrink:0;padding:7px 14px;opacity:0.7;">UNLOCK</button>
+        </div>
+
+        <!-- OPP Table -->
+        <details style="margin-top:14px;">
+          <summary style="display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;padding:4px 0;" class="mono">
+            <span style="font-size:9px;letter-spacing:0.16em;color:var(--dim);flex:1;">OPP TABLE — TAP TO SELECT</span>
+            <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </summary>
+          <div id="gpu-opp-table" style="display:flex;flex-direction:column;gap:3px;max-height:180px;overflow-y:auto;margin-top:8px;"></div>
+        </details>
+
+        <!-- Frequency History Graph -->
+        <div style="margin-top:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <span class="mono" style="font-size:9px;letter-spacing:0.16em;color:var(--dim);">FREQ HISTORY · 30s</span>
+            <span class="mono" id="gpu-graph-peak" style="font-size:9px;color:var(--dim);"></span>
+          </div>
+          <canvas id="gpu-freq-graph" height="52" style="width:100%;border-radius:6px;background:rgba(var(--a-rgb),0.04);border:0.5px solid rgba(var(--a-rgb),0.12);display:block;"></canvas>
+        </div>
+
+      </div>
+      </details>
+    </section>
+
+    <!-- ═══════════ BATTERY SECTION ═══════════ -->
+    <section class="nexus-panel" id="idle-60hz-section" data-pnum="04">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">🔋</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">BATTERY SECTION · SAVES BATTERY</div>
+          <div class="panel-subtitle">Idle 60Hz, deep sleep &amp; saver</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+      <div class="panel-body">
+
+        <!-- ── Charge Limit (moved from header) ── -->
+        <details class="charge-limit-bubble" id="header-charge-bubble" style="margin:0 0 10px;">
+          <summary class="clb-header">
+            <span class="mono clb-label">🔋 CHARGE LIMIT</span>
+            <span class="mono clb-val" id="charge-limit-display">80%</span>
+            <button class="nexus-btn clb-apply-btn" id="btn-apply-charge-limit" aria-label="Apply charge limit" onclick="event.preventDefault();event.stopPropagation();applyChargeLimit()">APPLY</button>
+            <button class="gaming-toggle-btn" id="btn-fastcharge-header" aria-pressed="false"
+              style="margin-left:6px;font-size:9px;" title="Fast Charge / SCP" onclick="event.preventDefault();event.stopPropagation();">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="fastcharge-header-label">⚡ SCP</span>
+            </button>
+            <span class="clb-arrow" aria-hidden="true">
+              <svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:14px;height:14px;margin-left:4px;">
+                <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/>
+                <polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+          </summary>
+          <div class="clb-body">
+            <div class="clb-slider-row">
+              <button class="clb-step-btn mono" id="clb-dec-btn" aria-label="Decrease charge limit" title="Decrease by 5%">−</button>
+              <input type="range" id="charge-limit-slider" class="nexus-slider clb-slider"
+                min="50" max="100" step="5" value="80">
+              <button class="clb-step-btn mono" id="clb-inc-btn" aria-label="Increase charge limit" title="Increase by 5%">+</button>
+            </div>
+            <div class="clb-ticks mono">
+              <span>50%</span><span>60%</span><span>70%</span><span>80%</span><span>90%</span><span>100%</span>
+            </div>
+          </div>
+        </details>
+
+        <!-- ── SUB-PANEL: Deep Sleep ── -->
+        <details class="adv-details rr-details">
+        <summary class="adv-summary mono">
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          DEEP SLEEP · SCREEN OFF
+        </summary>
+        <div class="rr-universal-block">
+          <div class="conn-bubble" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+              <div class="mono" style="font-size:11px;letter-spacing:.07em;color:var(--fg);">DEEP SLEEP ON SCREEN OFF</div>
+              <div class="mono" style="font-size:9px;color:var(--dim);">Throttles CPU to lowest freq when screen is off · Restores on screen on</div>
+            </div>
+            <button id="btn-deepsleep-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;margin-left:14px;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="deepsleep-toggle-label">OFF</span>
+            </button>
+          </div>
+          <div class="mono" style="font-size:9px;color:var(--dim);padding:6px 4px 0;opacity:0.6;">
+            Uses logcat screen events (same as MTK AI Engine) · Works with existing CPU governor
+          </div>
+        </div>
+        </details><!-- /Deep Sleep subpanel -->
+
+        <!-- ── SUB-PANEL: Battery Saver ── -->
+        <details class="adv-details rr-details">
+        <summary class="adv-summary mono">
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          BATTERY SAVER · PER-APP
+        </summary>
+        <div class="rr-universal-block">
+
+          <!-- Global toggle -->
+          <div class="conn-bubble" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+              <div class="mono" style="font-size:11px;letter-spacing:.07em;color:var(--fg);">AUTO BATTERY SAVER</div>
+              <div class="mono" style="font-size:9px;color:var(--dim);">Enables device battery saver on app switch · Games and spared apps are excluded</div>
+            </div>
+            <button id="btn-battsaver-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;margin-left:14px;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="battsaver-toggle-label">OFF</span>
+            </button>
+          </div>
+
+          <!-- App list (spare selection) -->
+          <div id="battsaver-list-block" style="display:none;">
+            <div class="panel-controls-sticky">
+            <div class="app-tab-bar" role="tablist">
+              <button class="app-tab app-tab--active" data-bstab="user" role="tab" aria-selected="true">
+                <span class="mono">👤 USER</span>
+                <span class="app-tab-count mono" id="battsaver-count-user">—</span>
+              </button>
+              <button class="app-tab" data-bstab="system" role="tab" aria-selected="false">
+                <span class="mono">⚙ SYS</span>
+                <span class="app-tab-count mono" id="battsaver-count-system">—</span>
+              </button>
+              <button class="app-tab" data-bstab="spared" role="tab" aria-selected="false">
+                <span class="mono">🛡 SPARED</span>
+                <span class="app-tab-count mono" id="battsaver-count-spared">0</span>
+              </button>
+            </div>
+            </div>
+            <div id="battsaver-app-list" class="app-list">
+              <span class="list-placeholder mono">Enable to load apps</span>
+            </div>
+          </div>
+
+        </div>
+        </details><!-- /Battery Saver subpanel -->
+
+      </div>
+      </details>
+    </section>
+
+    <!-- ═══════════ UNIVERSAL RR / BRIGHTNESS / VOLUME ═══════════ -->
+    <section class="nexus-panel" id="rr-panel-section" data-pnum="05">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">🔒</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">UNIVERSAL RR/BRIGHTNESS/VOLUME</div>
+          <div class="panel-subtitle">Global display &amp; audio controls</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+
+      <!-- Universal RR Lock -->
+      <details class="adv-details rr-details">
+      <summary class="adv-summary mono">
+        <span style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;">
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          UNIVERSAL REFRESH RATE LOCK
+        </span>
+        <!-- LOCK/UNLOCK button in summary bar -->
+        <button id="btn-unlock" class="nexus-btn" style="flex-shrink:0;font-size:10px;padding:5px 12px;"
+          onclick="event.stopPropagation()">LOCK</button>
+      </summary>
+      <div class="rr-universal-block">
+        <div id="universal-rr-buttons" class="rr-btn-group">
+          <span class="list-placeholder mono">Detecting display modes…</span>
+        </div>
+        <div class="rr-footer">
+          <div class="rr-status">
+            <span class="mono rr-status-label">ACTIVE LOCK:</span>
+            <span id="universal-rr-active" class="rr-status-val off">None</span>
+          </div>
+        </div>
+
+        <!-- ── Nested subpanel: 60Hz Drop ── -->
+        <details class="adv-details rr-details" style="margin-top:8px;">
+        <summary class="adv-summary mono">
+          <span style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">
+            <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            AUTO 60HZ DROP
+          </span>
+          <!-- 60Hz Drop + RR Guard controls — grid layout -->
+          <div style="display:grid;grid-template-columns:auto auto auto;align-items:center;gap:5px 8px;flex-shrink:0;" onclick="event.stopPropagation()">
+            <!-- Row 1: AUTO 60HZ -->
+            <span class="mono" style="font-size:8px;color:var(--dim);letter-spacing:.06em;white-space:nowrap;">AUTO 60HZ</span>
+            <button id="btn-idle60-toggle" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" style="flex-shrink:0;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="idle60-toggle-label">OFF</span>
+            </button>
+            <div id="univ-idle60-gear-wrap">
+              <button id="btn-univ-idle60-gear" class="nexus-btn"
+                style="padding:4px 8px;font-size:10px;"
+                onclick="event.stopPropagation();_toggleUnivIdle60Gear()"
+                aria-label="Set idle delay">
+                <span id="univ-idle60-gear-label">⚙</span>
+              </button>
+            </div>
+            <!-- Row 2: RR GUARD -->
+            <span class="mono" style="font-size:8px;color:var(--dim);letter-spacing:.06em;white-space:nowrap;">RR GUARD</span>
+            <button id="btn-rr-guard-toggle" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" style="flex-shrink:0;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="rr-guard-toggle-label">OFF</span>
+            </button>
+            <div></div>
+          </div>
+        </summary>
+
+        <!-- Body: Spare from 60Hz Drop -->
+        <div class="rr-universal-block" style="padding-top:0;">
+          <div class="conn-bubble" style="padding:9px 12px;display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+              <span class="mono" style="font-size:10px;letter-spacing:.07em;color:var(--fg);">🛡 SPARE FROM 60HZ DROP</span>
+              <span class="mono" style="font-size:9px;color:var(--dim);">Never drop to 60Hz — maintain locked rate</span>
+            </div>
+            <button id="btn-univ-rr-spare60" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;margin-left:12px;">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="gaming-toggle-label mono" id="univ-rr-spare60-label">OFF</span>
+            </button>
+          </div>
+        </div>
+        </details><!-- /Auto 60Hz Drop nested subpanel -->
+
+      </div>
+      </details>
+
+      <!-- Universal Brightness Lock -->
+      <details class="adv-details rr-details">
+      <summary class="adv-summary mono">
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        UNIVERSAL BRIGHTNESS LOCK
+      </summary>
+      <div class="rr-universal-block">
+        <div class="univ-bright-wrap">
+          <div class="univ-bright-row">
+            <button class="clb-step-btn mono" id="bright-dec-btn" aria-label="Decrease brightness">−</button>
+            <input type="range" id="universal-bright-slider" class="nexus-slider univ-bright-slider"
+              min="0" max="255" step="5" value="128">
+            <button class="clb-step-btn mono" id="bright-inc-btn" aria-label="Increase brightness">+</button>
+          </div>
+          <div class="univ-bright-ticks mono">
+            <span>0</span><span>64</span><span>128</span><span>192</span><span>255</span>
+          </div>
+          <div class="rr-footer" style="margin-top:10px;">
+            <div class="rr-status">
+              <span class="mono rr-status-label">ACTIVE LOCK:</span>
+              <span id="universal-bright-active" class="rr-status-val off">None</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button id="btn-bright-lock" class="nexus-btn">LOCK ›</button>
+              <button id="btn-bright-unlock" class="nexus-btn" style="opacity:0.55;">UNLOCK</button>
+            </div>
+          </div>
+          <div class="mono" style="font-size:12px;opacity:0.45;margin-top:6px;padding:0 2px;">
+            Sets system brightness globally · Per-app brightness will override per-app when configured
+          </div>
+        </div>
+      </div>
+      </details>
+
+      <!-- Universal Volume Lock -->
+      <details class="adv-details rr-details">
+      <summary class="adv-summary mono">
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        UNIVERSAL VOLUME LOCK
+      </summary>
+      <div class="rr-universal-block">
+        <div class="univ-bright-wrap">
+          <div class="univ-bright-row">
+            <button class="clb-step-btn mono" id="vol-dec-btn" aria-label="Decrease volume">−</button>
+            <input type="range" id="universal-vol-slider" class="nexus-slider univ-bright-slider"
+              min="0" max="15" step="1" value="8">
+            <button class="clb-step-btn mono" id="vol-inc-btn" aria-label="Increase volume">+</button>
+          </div>
+          <div class="univ-bright-ticks mono">
+            <span>0</span><span>3</span><span>7</span><span>11</span><span>15</span>
+          </div>
+          <div class="rr-footer" style="margin-top:10px;">
+            <div class="rr-status">
+              <span class="mono rr-status-label">ACTIVE LOCK:</span>
+              <span id="universal-vol-active" class="rr-status-val off">None</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button id="btn-vol-lock" class="nexus-btn">LOCK ›</button>
+              <button id="btn-vol-unlock" class="nexus-btn" style="opacity:0.55;">UNLOCK</button>
+            </div>
+          </div>
+          <div class="mono" style="font-size:12px;opacity:0.45;margin-top:6px;padding:0 2px;">
+            Sets media volume globally · Per-app volume will override per-app when configured
+          </div>
+        </div>
+
+      </div>
+      </details>
+
+      <!-- Headset Configuration Subpanel -->
+      <details class="adv-details rr-details" id="headset-config-section">
+        <summary class="adv-summary mono">
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          HEADSET CONFIGURATION
+          <span id="headset-status-badge" class="mono" style="font-size:9px;padding:2px 7px;border-radius:10px;background:rgba(255,255,255,0.06);color:var(--dim);margin-left:auto;">DETECTING…</span>
+        </summary>
+        <div class="rr-universal-block" style="padding-top:6px;">
+
+          <!-- Detection ribbon -->
+          <div class="gaming-status-ribbon" id="headset-detect-ribbon" style="margin-bottom:10px;">
+            <span class="mono gaming-ribbon-icon" id="headset-ribbon-icon">🎧</span>
+            <span class="mono gaming-ribbon-text" id="headset-ribbon-text">Checking headset status…</span>
+          </div>
+
+          <!-- No-connection hint (shown when unplugged) -->
+          <div class="headset-no-conn-hint mono" id="headset-no-conn-hint">
+            🔌 PLUG IN HEADSET OR OTG TO ENABLE CONFIGURATION
+          </div>
+
+          <!-- OTG Auto-Enable Status -->
+          <div class="conn-bubble" id="otg-detect-ribbon" style="padding:9px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">
+            <span class="mono" id="otg-ribbon-icon" style="font-size:14px;">○</span>
+            <div style="flex:1;min-width:0;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                <span class="mono" style="font-size:10px;letter-spacing:.06em;color:var(--fg);">🔌 OTG AUTO-ENABLE</span>
+                <span id="otg-status-badge" class="mono" style="font-size:9px;padding:2px 7px;border-radius:10px;background:rgba(255,255,255,0.06);color:var(--dim);white-space:nowrap;">NOT DETECTED</span>
+              </div>
+              <div class="mono" id="otg-ribbon-text" style="font-size:8.5px;color:var(--dim);margin-top:2px;">No OTG device — plug in OTG cable or USB-C adapter</div>
+            </div>
+          </div>
+
+          <!-- Volume on headset connect -->
+          <div class="conn-bubble" style="padding:10px 12px;margin-bottom:8px;">
+            <!-- Title row -->
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+                <div class="mono" style="font-size:10px;letter-spacing:.06em;color:var(--fg);">🔊 HEADSET VOLUME</div>
+                <div class="mono" style="font-size:8.5px;color:var(--dim);">Auto-set volume when headset plugs in</div>
+              </div>
+              <button id="headset-vol-toggle" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;">
+                <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                <span class="gaming-toggle-label mono" id="headset-vol-toggle-label">OFF</span>
+              </button>
+            </div>
+            <!-- Slider block — shown when enabled, styled like FREQ LIMIT -->
+            <div id="headset-vol-controls" style="display:none;margin-top:10px;">
+              <div class="clb-slider-row">
+                <button class="clb-step-btn mono" id="headset-vol-dec">−</button>
+                <input type="range" id="headset-vol-slider" class="nexus-slider clb-slider" min="0" max="15" step="1" value="9">
+                <button class="clb-step-btn mono" id="headset-vol-inc">+</button>
+              </div>
+              <div class="clb-ticks mono">
+                <span>0</span><span>3</span><span>7</span><span>11</span><span>15</span>
+              </div>
+              <div class="mono" style="font-size:9px;color:var(--a);margin-top:6px;text-align:center;" id="headset-vol-val">9 / 15</div>
+            </div>
+          </div>
+
+          <!-- Mute on disconnect -->
+          <div class="conn-bubble" style="padding:10px 12px;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div>
+                <div class="mono" style="font-size:10px;letter-spacing:.06em;color:var(--fg);">🔇 MUTE ON DISCONNECT</div>
+                <div class="mono" style="font-size:8.5px;color:var(--dim);margin-top:2px;">Mute media when headset unplugs</div>
+              </div>
+              <button id="headset-mute-toggle" class="gaming-toggle-btn" aria-pressed="false">
+                <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                <span class="gaming-toggle-label mono" id="headset-mute-label">OFF</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Restore speaker volume — always automatic, shown as info -->
+          <div class="conn-bubble" style="padding:10px 12px;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:14px;">🔈</span>
+            <div>
+              <div class="mono" style="font-size:10px;letter-spacing:.06em;color:var(--fg);">RESTORE SPEAKER VOL</div>
+              <div class="mono" style="font-size:8.5px;color:var(--dim);margin-top:2px;">Auto — restores universal volume on unplug</div>
+            </div>
+            <span class="mono" style="margin-left:auto;font-size:9px;padding:2px 8px;border-radius:8px;background:rgba(var(--a-rgb),0.10);border:1px solid rgba(var(--a-rgb),0.25);color:var(--a);white-space:nowrap;">AUTO</span>
+          </div>
+
+        </div>
+      </details>
+
+      <!-- ── SUB-PANEL: Universal Screen Off Timeout ── -->
+      </details>
+    </section>
+    <section class="nexus-panel" id="perapp-rr-section" data-pnum="06">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">📱</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">PER-APP RR/BRIGHTNESS/VOLUME</div>
+          <div class="panel-subtitle">Per-app display overrides</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+      <div class="rr-perapp-block" style="padding:0 14px 16px;">
+        <div class="panel-controls-sticky">
+        <!-- App category tabs -->
+        <div class="app-tab-bar" role="tablist" aria-label="App categories">
+          <button class="app-tab app-tab--active" id="tab-user" data-tab="user" role="tab" aria-selected="true">
+            <span class="mono">👤 USER</span>
+            <span class="app-tab-count mono" id="tab-count-user">—</span>
+          </button>
+          <button class="app-tab" id="tab-system" data-tab="system" role="tab" aria-selected="false">
+            <span class="mono">⚙ SYSTEM</span>
+            <span class="app-tab-count mono" id="tab-count-system">—</span>
+          </button>
+          <button class="app-tab" id="tab-configured" data-tab="configured" role="tab" aria-selected="false">
+            <span class="mono">⚙️ CFG</span>
+            <span class="app-tab-count mono" id="tab-count-configured">—</span>
+          </button>
+        </div>
+        </div>
+        <div id="app-list-container" class="app-list">
+          <span class="list-placeholder mono">Loading Applications…</span>
+        </div>
+      </div>
+      </details>
+    </section>
+
+
+
+
+
+    <!-- ═══════════ BOOST COLOR · SATURATION CONTROL ═══════════ -->
+    <section class="nexus-panel" id="boost-color-section" data-pnum="07">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">🎨</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">BOOST COLOR · SATURATION</div>
+          <div class="panel-subtitle">Saturation &amp; color boost</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+
+      <div style="padding:12px 14px 16px;">
+
+        <!-- Saturation slider block -->
+        <div class="gpu-slider-block">
+          <div class="gpu-slider-header">
+            <span class="gpu-slider-title mono">SATURATION BOOST</span>
+            <span class="gpu-slider-val mono" id="sat-boost-val" style="color:var(--a);">1.0</span>
+          </div>
+          <div class="gpu-slider-track-wrap" style="display:flex;align-items:center;gap:6px;">
+            <button class="clb-step-btn mono" id="sat-dec-btn" aria-label="Decrease saturation">−</button>
+            <input type="range" id="sat-boost-slider" class="nexus-slider"
+              min="0" max="2" step="0.1" value="1.0" style="flex:1;">
+            <button class="clb-step-btn mono" id="sat-inc-btn" aria-label="Increase saturation">+</button>
+          </div>
+          <div class="slider-ticks mono" style="display:flex;justify-content:space-between;font-size:10px;margin-top:4px;">
+            <span class="stk">0.0 GREYSCALE</span>
+            <span class="stk">1.0 DEFAULT</span>
+            <span class="stk">2.0 VIVID</span>
+          </div>
+        </div>
+
+        <!-- Status row -->
+        <div class="gaming-status-ribbon" style="margin-top:10px;">
+          <span class="mono gaming-ribbon-icon">🎨</span>
+          <span class="mono gaming-ribbon-text" id="sat-boost-status">Slide to adjust display saturation in real-time</span>
+        </div>
+
+        <!-- Metrics -->
+        <div class="conn-bubble" style="margin-top:10px; justify-content:space-between; padding:10px 16px;">
+          <div style="display:flex; flex-direction:column; align-items:flex-start; gap:3px;">
+            <div class="metric-label mono">SATURATION</div>
+            <div class="metric-val" id="sat-boost-val-metric">1.0×</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:3px;">
+            <div class="metric-label mono">MODE</div>
+            <div class="metric-val" id="sat-boost-mode-label">DEFAULT</div>
+          </div>
+        </div>
+
+      </div>
+
+      </details>
+    </section>
+
+
+
+    <!-- ═══════════ ANIMATION SCALE ═══════════ -->
+    <section class="nexus-panel" id="anim-scale-section" data-pnum="08">
+      <details class="panel-details">
+      <summary class="panel-header panel-summary">
+        <div class="panel-tag panel-icon">✨</div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">ANIMATION SCALE</div>
+          <div class="panel-subtitle">Window &amp; transition speed</div>
+        </div>
+        <span class="panel-status-dot" aria-hidden="true"></span>
+        <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </summary>
+
+      <div style="padding:6px 0 10px;">
+
+        <!-- Window Animation Scale -->
+        <details class="adv-details rr-details">
+          <summary class="adv-summary mono">
+            <span style="display:flex;align-items:center;gap:8px;flex:1;">
+              <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              WINDOW ANIMATION SCALE
+            </span>
+            <span class="gpu-slider-val mono" id="anim-win-val" style="color:var(--a);flex-shrink:0;">1×</span>
+          </summary>
+          <div class="rr-universal-block">
+            <div class="rr-btn-group" id="anim-win-btns" style="flex-wrap:wrap;gap:6px;width:100%;">
+              <button class="rr-btn" data-scale="0.25">.25×</button>
+              <button class="rr-btn" data-scale="0.5">.50×</button>
+              <button class="rr-btn" data-scale="0.65">.65×</button>
+              <button class="rr-btn" data-scale="0.75">.75×</button>
+              <button class="rr-btn rr-btn--active" data-scale="1">1×</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Transition Animation Scale -->
+        <details class="adv-details rr-details">
+          <summary class="adv-summary mono">
+            <span style="display:flex;align-items:center;gap:8px;flex:1;">
+              <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              TRANSITION ANIMATION SCALE
+            </span>
+            <span class="gpu-slider-val mono" id="anim-trans-val" style="color:var(--a);flex-shrink:0;">1×</span>
+          </summary>
+          <div class="rr-universal-block">
+            <div class="rr-btn-group" id="anim-trans-btns" style="flex-wrap:wrap;gap:6px;width:100%;">
+              <button class="rr-btn" data-scale="0.25">.25×</button>
+              <button class="rr-btn" data-scale="0.5">.50×</button>
+              <button class="rr-btn" data-scale="0.65">.65×</button>
+              <button class="rr-btn" data-scale="0.75">.75×</button>
+              <button class="rr-btn rr-btn--active" data-scale="1">1×</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Animator Duration Scale -->
+        <details class="adv-details rr-details">
+          <summary class="adv-summary mono">
+            <span style="display:flex;align-items:center;gap:8px;flex:1;">
+              <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              ANIMATOR DURATION SCALE
+            </span>
+            <span class="gpu-slider-val mono" id="anim-dur-val" style="color:var(--a);flex-shrink:0;">1×</span>
+          </summary>
+          <div class="rr-universal-block">
+            <div class="rr-btn-group" id="anim-dur-btns" style="flex-wrap:wrap;gap:6px;width:100%;">
+              <button class="rr-btn" data-scale="0.25">.25×</button>
+              <button class="rr-btn" data-scale="0.5">.50×</button>
+              <button class="rr-btn" data-scale="0.65">.65×</button>
+              <button class="rr-btn" data-scale="0.75">.75×</button>
+              <button class="rr-btn rr-btn--active" data-scale="1">1×</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Status ribbon -->
+        <div class="gaming-status-ribbon" style="margin-top:4px;">
+          <span class="mono gaming-ribbon-icon">🎬</span>
+          <span class="mono gaming-ribbon-text" id="anim-scale-status">Tap a value to apply animation scale instantly</span>
+        </div>
+
+        <!-- Metrics -->
+        <div class="conn-bubble" style="margin-top:10px; justify-content:space-between; padding:10px 16px;">
+          <div style="display:flex; flex-direction:column; align-items:flex-start; gap:8px;">
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div class="metric-label mono">WINDOW</div>
+              <div class="metric-val" id="anim-m-win">1×</div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div class="metric-label mono">TRANSITION</div>
+              <div class="metric-val" id="anim-m-trans">1×</div>
+            </div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:3px;">
+              <div class="metric-label mono">DURATION</div>
+              <div class="metric-val" id="anim-m-dur">1×</div>
+            </div>
+            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:3px;">
+              <div class="metric-label mono">FEEL</div>
+              <div class="metric-val" id="anim-m-feel">DEFAULT</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      </details>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════
+         PANEL 06 · KILL OTHERS · LAUNCH MANAGER
+         ══════════════════════════════════════════════════ -->
+    <section class="nexus-panel" id="kill-others-section" data-pnum="09" style="display:none;" data-hidden-by-toggle="1">
+      <details class="panel-details">
+        <summary class="panel-header panel-summary">
+          <div class="panel-tag panel-icon">🚀</div>
+          <div class="panel-title-wrap">
+            <div class="panel-title">KILL OTHERS · LAUNCH MANAGER</div>
+            <div class="panel-subtitle">Force-stop apps on game launch</div>
+          </div>
+          <span class="panel-status-dot" aria-hidden="true"></span>
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        </summary>
+        <div class="panel-body">
+
+          <!-- Search + Tabs sticky -->
+          <div class="panel-controls-sticky">
+          <!-- Search -->
+
+          <!-- Tabs -->
+          <div class="app-tab-bar" role="tablist">
+            <button class="app-tab app-tab--active" data-kotab="user" role="tab" aria-selected="true">
+              <span class="mono">USER</span>
+              <span class="app-tab-count mono" id="ko-count-user">—</span>
+            </button>
+            <button class="app-tab" data-kotab="configured" role="tab" aria-selected="false">
+              <span class="mono">CFG</span>
+              <span class="app-tab-count mono" id="ko-count-cfg">—</span>
+            </button>
+          </div>
+          </div>
+
+          <!-- App list -->
+          <div id="ko-app-list" class="app-list">
+            <span class="list-placeholder mono">Open this panel to load apps</span>
+          </div>
+
+        </div>
+      </details>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════
+         PANEL 07 · CONNECTION ON LAUNCH
+         ══════════════════════════════════════════════════ -->
+    <section class="nexus-panel" id="conn-launch-section" data-pnum="10">
+      <details class="panel-details">
+        <summary class="panel-header panel-summary">
+          <div class="panel-tag panel-icon">📡</div>
+          <div class="panel-title-wrap">
+            <div class="panel-title">CONNECTION ON LAUNCH</div>
+            <div class="panel-subtitle">WiFi &amp; data on app open</div>
+          </div>
+          <span class="panel-status-dot" aria-hidden="true"></span>
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        </summary>
+        <div class="panel-body">
+
+          <!-- All sticky controls for panel 8 -->
+          <div class="panel-controls-sticky">
+          <!-- Search -->
+
+          <!-- Tabs -->
+          <div class="app-tab-bar" role="tablist">
+            <button class="app-tab app-tab--active" data-cltab="user" role="tab" aria-selected="true">
+              <span class="mono">USER</span>
+              <span class="app-tab-count mono" id="cl-count-user">—</span>
+            </button>
+            <button class="app-tab" data-cltab="system" role="tab" aria-selected="false">
+              <span class="mono">SYSTEM</span>
+              <span class="app-tab-count mono" id="cl-count-system">—</span>
+            </button>
+            <button class="app-tab" data-cltab="configured" role="tab" aria-selected="false">
+              <span class="mono">CFG</span>
+              <span class="app-tab-count mono" id="cl-count-cfg">—</span>
+            </button>
+          </div>
+
+          <!-- Auto Idle Off sub-panel -->
+          <details class="adv-details rr-details" style="margin-bottom:0;margin-top:6px;">
+            <summary class="adv-summary mono">
+              <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              AUTO IDLE — CONN OFF
+            </summary>
+            <div style="padding:4px 0 8px;">
+
+              <!-- Auto WiFi-off on Idle bubble -->
+              <div class="conn-bubble idle-wifi-bubble" id="idle-wifi-bubble" style="margin-bottom:6px;padding:10px 14px;justify-content:space-between;align-items:center;">
+                <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;opacity:0.75;color:var(--a);">
+                    <path d="M5 12.55a11 11 0 0 1 14.08 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    <path d="M1.42 9a16 16 0 0 1 21.16 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    <circle cx="12" cy="20" r="1" fill="currentColor"/>
+                    <line x1="4" y1="4" x2="20" y2="20" stroke="#ff4d6d" stroke-width="1.6" stroke-linecap="round" opacity="0" id="idle-wifi-slash"/>
+                  </svg>
+                  <div style="min-width:0;">
+                    <div class="mono" style="font-size:11px;letter-spacing:.07em;color:var(--fg);">AUTO WIFI-OFF ON IDLE</div>
+                    <div class="mono" style="font-size:9px;color:var(--dim);margin-top:2px;">Disables WiFi &amp; Data 20s after returning to homescreen</div>
+                  </div>
+                </div>
+                <button id="cl-idle-wifi-btn" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;margin-left:14px;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="cl-idle-wifi-label">OFF</span>
+                </button>
+              </div>
+
+              <!-- Auto Data-off on Idle bubble -->
+              <div class="conn-bubble idle-data-bubble" id="idle-data-bubble" style="padding:10px 14px;justify-content:space-between;align-items:center;">
+                <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;opacity:0.75;color:var(--a);">
+                    <rect x="2" y="14" width="3" height="7" rx="1" fill="currentColor" opacity="0.4"/>
+                    <rect x="7" y="10" width="3" height="11" rx="1" fill="currentColor" opacity="0.6"/>
+                    <rect x="12" y="6" width="3" height="15" rx="1" fill="currentColor" opacity="0.8"/>
+                    <rect x="17" y="2" width="3" height="19" rx="1" fill="currentColor"/>
+                    <line x1="4" y1="4" x2="20" y2="20" stroke="#ff4d6d" stroke-width="1.6" stroke-linecap="round" opacity="0" id="idle-data-slash"/>
+                  </svg>
+                  <div style="min-width:0;">
+                    <div class="mono" style="font-size:11px;letter-spacing:.07em;color:var(--fg);">AUTO DATA-OFF ON IDLE</div>
+                    <div class="mono" style="font-size:9px;color:var(--dim);margin-top:2px;">Disables Mobile Data 20s after returning to homescreen</div>
+                  </div>
+                </div>
+                <button id="cl-idle-data-btn" class="gaming-toggle-btn" aria-pressed="false" style="flex-shrink:0;margin-left:14px;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="cl-idle-data-label">OFF</span>
+                </button>
+              </div>
+
+            </div>
+          </details>
+          </div>
+
+          <!-- App list -->
+          <div id="cl-app-list" class="app-list">
+            <span class="list-placeholder mono">Open this panel to load apps</span>
+          </div>
+
+        </div>
+      </details>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════
+         PANEL 11 · FEATURES · FPS STABILITY & ANTI-THROTTLE
+         ══════════════════════════════════════════════════ -->
+    <section class="nexus-panel" id="features-section" data-pnum="11">
+      <details class="panel-details">
+        <summary class="panel-header panel-summary">
+          <div class="panel-tag panel-icon">⚡</div>
+          <div class="panel-title-wrap">
+            <div class="panel-title">FEATURES · FPS STABILITY</div>
+            <div class="panel-subtitle">FPS stability &amp; system tweaks</div>
+          </div>
+          <span class="panel-status-dot" aria-hidden="true"></span>
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        </summary>
+        <div class="panel-body" style="padding:12px 14px 16px;display:flex;flex-direction:column;gap:10px;">
+
+          <!-- Status ribbon -->
+          <div class="gaming-status-ribbon" id="features-ribbon">
+            <span class="mono gaming-ribbon-icon">⚡</span>
+            <span class="mono gaming-ribbon-text" id="features-ribbon-text">Toggle features to reduce FPS drop on MT6893</span>
+          </div>
+
+          <!-- ── TOGGLE 1: FRAME STABILITY ────────────────────────── -->
+          <details class="adv-details conn-bubble" id="feat-frame-sub" style="flex-direction:column;align-items:stretch;padding:0;">
+            <summary class="adv-summary">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                <span style="font-size:18px;flex-shrink:0;">🎯</span>
+                <div style="min-width:0;">
+                  <div class="mono" style="font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--fg);">FRAME STABILITY</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">SF illusion method · phase offsets · 60Hz jitter fix</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="feat-frame-toggle" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="feat-frame-label">OFF</span>
+                </button>
+              </div>
+            </summary>
+            <div class="feat-detail-list" id="feat-frame-details" style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:5px;">
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">frame_rate_multiple_threshold=120 — keeps 120Hz pipeline at 60Hz display</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">Phase offsets tuned for Mali-G77 MC9 (early, GL, high-FPS)</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">Touch/idle timer 3000ms — prevents premature 60Hz drops</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">vendor.debug.sf.latch_unsignaled=1 (MTK HAL fix)</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">disable_client_composition_cache · disable_backpressure</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">min_refresh_rate=90 · peak=120 · Skia GL threaded renderer</span>
+              </div>
+            </div>
+          </details><!-- /frame stability panel -->
+
+          <!-- ── TOGGLE 2: ANTI-THROTTLE BOOST ──────────────────── -->
+          <details class="adv-details conn-bubble" id="feat-throttle-sub" style="flex-direction:column;align-items:stretch;padding:0;">
+            <summary class="adv-summary">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                <span style="font-size:18px;flex-shrink:0;">🔥</span>
+                <div style="min-width:0;">
+                  <div class="mono" style="font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--fg);">ANTI-THROTTLE BOOST</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">Thermal · CPU/GPU floor · FPSGO pacing · powerhal</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="feat-throttle-toggle" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="feat-throttle-label">OFF</span>
+                </button>
+              </div>
+            </summary>
+            <div style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:8px;">
+              <div class="mono" id="feat-throttle-warn" style="font-size:8px;color:#f59e0b;padding:4px 8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:6px;display:none;">
+                ⚠ Device may run warmer — disable if overheating
+              </div>
+              <div class="feat-detail-list" id="feat-throttle-details" style="display:flex;flex-direction:column;gap:5px;">
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">vendor.powerhal.dfs.enable=0 — disables dynamic frequency scaling</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">CPU min freq floor 1200MHz · GPU min freq floor 400MHz</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">FPSGO boost_ta=0 — predictable frame pacing (MTK kernel)</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">debug.mali.force_profiling=0 · GPU overhead removed</span>
+                </div>
+                <div class="feat-detail-row">
+                  <span class="feat-dot"></span>
+                  <span class="mono feat-detail-text">hwui.target_cpu_time_percent=50 · balanced CPU/GPU split</span>
+                </div>
+              </div>
+            </div>
+          </details><!-- /anti-throttle panel -->
+
+
+          <!-- ── TOGGLE 3: PYROX THERMAL ────────────────────────────── -->
+          <details class="adv-details conn-bubble" id="feat-pyrox-sub" style="flex-direction:column;align-items:stretch;padding:0;">
+            <summary class="adv-summary">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                <span style="font-size:18px;flex-shrink:0;">🔥</span>
+                <div style="min-width:0;">
+                  <div class="mono" style="font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--fg);">PYROX THERMAL</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">Removes all thermal limits · 125°C ceiling · GPU unlocked</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="btn-pyrox-thermal" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="pyrox-thermal-label">OFF</span>
+                </button>
+              </div>
+            </summary>
+            <div style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:6px;">
+              <div class="gaming-status-ribbon" id="pyrox-status-ribbon" style="margin-bottom:4px;">
+                <span class="mono gaming-ribbon-icon" id="pyrox-ribbon-icon">🛡</span>
+                <span class="mono gaming-ribbon-text" id="pyrox-ribbon-text">Pyrox thermal engine inactive — system throttling in effect</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+                <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">Thermal svc: <span id="pyrox-svc-status" style="color:var(--a);">RUNNING</span></span></div>
+                <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">PPM: <span id="pyrox-ppm-status" style="color:var(--a);">ACTIVE</span></span></div>
+                <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">GPU limits: <span id="pyrox-gpu-status" style="color:var(--a);">ENFORCED</span></span></div>
+                <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">TZ CPU: <span id="pyrox-tzcpu-status" style="color:var(--a);">DEFAULT</span></span></div>
+                <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">CPU limits: <span id="pyrox-cpu-status" style="color:var(--a);">NORMAL</span></span></div>
+                <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">Thermal zones: <span id="pyrox-zones-status" style="color:var(--a);">ENABLED</span></span></div>
+              </div>
+              <div class="mono" style="font-size:8px;color:#f59e0b;padding:4px 8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:6px;margin-top:2px;">
+                ⚠ Device may overheat — use only during gaming sessions
+              </div>
+            </div>
+          </details><!-- /pyrox thermal -->
+
+
+          <!-- ── TOGGLE 5: COOL MODE ───────────────────────────────── -->
+          <details class="adv-details conn-bubble" id="feat-cool-sub" style="flex-direction:column;align-items:stretch;padding:0;">
+            <summary class="adv-summary">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                <span style="font-size:18px;flex-shrink:0;">❄️</span>
+                <div style="min-width:0;">
+                  <div class="mono" style="font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--fg);">COOL MODE</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">10 optimizations — GPU · EEM · Schedutil · DRAM · FPSGO · PPM · GED</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="btn-cool-mode" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="cool-mode-label">OFF</span>
+                </button>
+              </div>
+            </summary>
+            <div style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:5px;">
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">GPU boost disabled · DVFS reactive mode · DCS dynamic core scaling (GED)</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">EEM GPU offset -8 (EEMG_DET_GPU + GPU_HI) · CPU clusters -8 · CCI -4</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">Schedutil up_rate 2000µs · down_rate 7000µs — slower ramp-up, faster drop</span>
+              </div>
+              <div class="feat-detail-row">
+                <span class="feat-dot"></span>
+                <span class="mono feat-detail-text">DRAM OPP floor released (DVFSRC) · CPU deep idle MCDI enabled</span>
+              </div>
+              <div class="mono" style="font-size:8px;color:var(--a);padding:4px 8px;background:rgba(var(--a-rgb),0.06);border:1px solid rgba(var(--a-rgb),0.2);border-radius:6px;margin-top:4px;">
+                ℹ 6 optimizations · non-destructive · thermal protection stays active
+              </div>
+            </div>
+          </details><!-- /cool mode -->
+
+          <!-- ── TOGGLE 4: CPU VOLTS OPTIMIZER ──────────────────────── -->
+          <details class="adv-details conn-bubble" id="feat-cpuvolt-sub" style="flex-direction:column;align-items:stretch;padding:0;">
+            <summary class="adv-summary">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                <span style="font-size:18px;flex-shrink:0;">⚡</span>
+                <div style="min-width:0;">
+                  <div class="mono" style="font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--fg);">CPU VOLTS OPTIMIZER</div>
+                  <div class="mono" style="font-size:8px;color:var(--dim);margin-top:2px;">EEM voltage offset · reduces heat & improves battery</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                <button id="btn-cpuvolt-toggle" class="gaming-toggle-btn popup-toggle-btn--danger" aria-pressed="false" onclick="event.stopPropagation()" style="flex-shrink:0;">
+                  <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+                  <span class="gaming-toggle-label mono" id="cpuvolt-label">OFF</span>
+                </button>
+              </div>
+            </summary>
+            <div style="border-top:1px solid var(--bdr);padding:10px 14px 14px;display:flex;flex-direction:column;gap:5px;">
+              <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">EEM_DET_B (Prime): <span id="cpuvolt-b-val" style="color:var(--a);">0</span></span></div>
+              <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">EEM_DET_BL (Big): <span id="cpuvolt-bl-val" style="color:var(--a);">0</span></span></div>
+              <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">EEM_DET_L (Little): <span id="cpuvolt-l-val" style="color:var(--a);">0</span></span></div>
+              <div class="feat-detail-row"><span class="feat-dot"></span><span class="mono feat-detail-text">EEM_DET_CCI: <span id="cpuvolt-cci-val" style="color:var(--a);">0</span></span></div>
+              <div class="mono" style="font-size:8px;color:var(--dim);padding:4px 8px;background:rgba(var(--a-rgb),0.04);border:1px solid rgba(var(--a-rgb),0.15);border-radius:6px;margin-top:2px;">
+                ℹ Resets on reboot — persisted via service.sh on next boot
+              </div>
+            </div>
+          </details><!-- /cpu volts optimizer -->
+
+        </div>
+      </details>
+    </section>
+
+
+    <!-- ── PANEL 12: CLEAR APP CACHE ─────────────────────────── -->
+    <section class="nexus-panel" id="clear-cache-section" data-pnum="12">
+      <details class="panel-details" id="clear-cache-panel">
+        <summary class="panel-header panel-summary">
+          <div class="panel-tag panel-icon">🗑</div>
+          <div class="panel-title-wrap">
+            <div class="panel-title">CLEAR APP CACHE</div>
+            <div class="panel-subtitle">Auto-clear cache on app launch</div>
+          </div>
+          <span class="panel-status-dot" aria-hidden="true"></span>
+          <span class="adv-arrow-btn" aria-hidden="true"><svg class="adv-arrow-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/><polyline points="7,8 10,12 13,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        </summary>
+
+        <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;">
+
+          <!-- Search bar -->
+          <div style="display:flex;align-items:center;gap:8px;background:rgba(var(--a-rgb),0.04);border:0.2px solid rgba(var(--a-rgb),0.22);border-radius:var(--radius);padding:8px 12px;">
+            <span class="mono" style="color:var(--dim);font-size:13px;">⌕</span>
+            <input id="cache-search-input" type="search" autocomplete="off" spellcheck="false"
+              placeholder="Search apps…"
+              style="flex:1;background:transparent;border:none;outline:none;color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:0.04em;"
+              oninput="_filterCacheApps(this.value)">
+          </div>
+
+          <!-- Tabs -->
+          <div class="app-tab-bar" role="tablist" style="margin-bottom:2px;">
+            <button class="app-tab" id="cache-panel-tab-spared" data-cachetab2="spared" role="tab" aria-selected="false">
+              <span class="mono">🛡 SPARED</span>
+              <span class="app-tab-count mono" id="cache-panel-count-spared">0</span>
+            </button>
+            <button class="app-tab app-tab--active" id="cache-panel-tab-user" data-cachetab2="user" role="tab" aria-selected="true">
+              <span class="mono">📱 USER</span>
+              <span class="app-tab-count mono" id="cache-panel-count-user">—</span>
+            </button>
+            <button class="app-tab" id="cache-panel-tab-system" data-cachetab2="system" role="tab" aria-selected="false">
+              <span class="mono">⚙ SYSTEM</span>
+              <span class="app-tab-count mono" id="cache-panel-count-system">—</span>
+            </button>
+          </div>
+
+          <!-- Action buttons -->
+          <div style="display:flex;gap:8px;">
+            <button class="nexus-btn" onclick="_selectAllCacheApps()" style="flex:1;padding:8px;font-size:10px;">SELECT ALL</button>
+            <button class="nexus-btn" onclick="_clearSelectedCache()" id="btn-clear-cache"
+              style="flex:1;padding:8px;font-size:10px;background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.5);color:#f87171;">
+              🗑 CLEAR SELECTED
+            </button>
+          </div>
+
+          <!-- Status -->
+          <div id="cache-clear-status" class="mono" style="font-size:9px;color:var(--dim);display:none;padding:6px 10px;background:rgba(var(--a-rgb),0.06);border-radius:6px;"></div>
+
+          <!-- App list -->
+          <div id="cache-app-list" style="display:flex;flex-direction:column;gap:4px;">
+            <div class="mono" style="font-size:10px;color:var(--dim);text-align:center;padding:16px;">
+              Loading apps…
+            </div>
+          </div>
+
+        </div>
+      </details>
+    </section>
+
+  <!-- Per-App Config Bubble (mirrors FAB theme bubble style) -->
+  <div id="floating-popup" class="app-config-bubble-overlay" role="dialog" aria-modal="true" aria-label="Game Configuration" style="display:none;">
+    <div class="app-config-bubble">
+      <!-- Sticky Header — does not scroll -->
+      <div class="popup-sticky-header">
+        <div class="app-config-bubble-header" style="padding-bottom:0;border-bottom:none;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;opacity:0.7;">
+            <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="popup-title mono" id="popup-main-title">GAME CONFIGURATION</span>
+          <button id="btn-apply" class="nexus-btn" style="font-size:10px;padding:5px 10px;flex-shrink:0;">✓ APPLY</button>
+          <button id="btn-dismiss" class="app-config-close" aria-label="Close">✕</button>
+        </div>
+        <span id="popup-pkg-display" class="popup-pkg mono" style="display:block;padding:2px 14px 8px;border-bottom:1px solid var(--border);"></span>
+      </div>
+
+      <!-- Scrollable body -->
+      <div class="popup-scroll-body">
+
+      <!-- RR Lock -->
+      <div class="popup-block">
+        <div class="popup-block-header">
+          <span class="mono popup-block-label">REFRESH RATE LOCK</span>
+          <span id="refresh-mode-display" class="popup-block-val off">Off</span>
+        </div>
+        <div id="refresh-radio-list" class="refresh-radio-list" role="listbox" aria-label="Select refresh rate">
+          <div class="radio-option radio-option--selected" data-value="" role="option">
+            <span class="radio-label mono">Off</span>
+            <span class="radio-dot"></span>
+          </div>
+        </div>
+        <select id="refresh-mode-select" style="display:none" aria-hidden="true">
+          <option value="">Off</option>
+        </select>
+      </div>
+
+      <!-- Per-App Brightness -->
+      <details class="popup-block popup-bright-block popup-collapsible">
+        <summary class="popup-collapsible-summary">
+          <span class="mono popup-block-label">☀ BRIGHTNESS</span>
+          <span id="popup-bright-val" class="popup-block-val" style="color:var(--a);">Default</span>
+          <span class="popup-collapse-arrow">▾</span>
+        </summary>
+        <div class="popup-collapsible-body">
+          <div class="popup-bright-slider-wrap">
+            <span class="mono popup-bright-icon">🌑</span>
+            <input type="range" id="popup-bright-slider" class="nexus-slider popup-bright-slider"
+              min="-1" max="255" step="1" value="-1">
+            <span class="mono popup-bright-icon">☀</span>
+          </div>
+          <div class="popup-step-row">
+            <button class="clb-step-btn mono" id="popup-bright-dec" aria-label="Decrease brightness">−</button>
+            <button class="clb-step-btn mono" id="popup-bright-inc" aria-label="Increase brightness">+</button>
+          </div>
+          <div class="popup-bright-hint mono">-1 = default · 0–MAX = locked</div>
+        </div>
+      </details>
+
+      <!-- Per-App Volume -->
+      <details class="popup-block popup-vol-block popup-collapsible">
+        <summary class="popup-collapsible-summary">
+          <span class="mono popup-block-label">🔊 VOLUME</span>
+          <span id="popup-vol-val" class="popup-block-val" style="color:var(--a);">Default</span>
+          <span class="popup-collapse-arrow">▾</span>
+        </summary>
+        <div class="popup-collapsible-body">
+          <div class="popup-bright-slider-wrap">
+            <span class="mono popup-bright-icon">🔇</span>
+            <input type="range" id="popup-vol-slider" class="nexus-slider popup-bright-slider"
+              min="-1" max="15" step="1" value="-1">
+            <span class="mono popup-bright-icon">🔊</span>
+          </div>
+          <div class="popup-step-row">
+            <button class="clb-step-btn mono" id="popup-vol-dec" aria-label="Decrease volume">−</button>
+            <button class="clb-step-btn mono" id="popup-vol-inc" aria-label="Increase volume">+</button>
+          </div>
+          <div class="popup-bright-hint mono">-1 = default · 0–MAX = locked</div>
+        </div>
+      </details>
+
+      <!-- Per-App Headset Volume -->
+      <details class="popup-block popup-collapsible" id="popup-headset-vol-block">
+        <summary class="popup-collapsible-summary">
+          <span class="mono popup-block-label">🎧 HEADSET VOLUME</span>
+          <span class="popup-block-val" id="popup-hvol-summary-val" style="color:var(--a);">OFF</span>
+          <span class="popup-collapse-arrow">▾</span>
+        </summary>
+        <div class="popup-collapsible-body">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+            <span class="mono" style="font-size:8.5px;color:var(--dim);">Auto-set volume when headset / OTG plugs in</span>
+            <button id="popup-hvol-toggle" class="gaming-toggle-btn popup-toggle-btn" aria-pressed="false" aria-label="Toggle headset volume">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="popup-toggle-label mono" id="popup-hvol-label">OFF</span>
+            </button>
+          </div>
+          <div id="popup-hvol-controls" style="display:flex;align-items:center;gap:8px;opacity:0.35;pointer-events:none;">
+            <button class="clb-step-btn mono" id="popup-hvol-dec" aria-label="Decrease headset volume">−</button>
+            <input type="range" id="popup-hvol-slider" class="nexus-slider popup-bright-slider"
+              min="0" max="15" step="1" value="7">
+            <button class="clb-step-btn mono" id="popup-hvol-inc" aria-label="Increase headset volume">+</button>
+            <span class="mono" id="popup-hvol-val" style="color:var(--a);min-width:44px;text-align:right;">7 / 15</span>
+          </div>
+          <div class="popup-bright-hint mono">0–15 · active only while headset / OTG connected</div>
+        </div>
+      </details>
+
+      <!-- Per-App Screen Off Timeout -->
+      <!-- Per-App Saturation Boost -->
+      <details class="popup-block popup-sat-block popup-collapsible">
+        <summary class="popup-collapsible-summary">
+          <span class="mono popup-block-label">🎨 SATURATION</span>
+          <span id="popup-sat-val" class="popup-block-val" style="color:var(--a);">Default</span>
+          <span class="popup-collapse-arrow">▾</span>
+        </summary>
+        <div class="popup-collapsible-body">
+          <div class="popup-bright-slider-wrap">
+            <span class="mono popup-bright-icon">🌑</span>
+            <input type="range" id="popup-sat-slider" class="nexus-slider popup-bright-slider"
+              min="-1" max="20" step="1" value="-1">
+            <span class="mono popup-bright-icon">🌈</span>
+          </div>
+          <div class="popup-step-row">
+            <button class="clb-step-btn mono" id="popup-sat-dec" aria-label="Decrease saturation">−</button>
+            <button class="clb-step-btn mono" id="popup-sat-inc" aria-label="Increase saturation">+</button>
+          </div>
+          <div class="popup-bright-hint mono">-1 = default · 0–20 = custom (10 = 1.0x normal)</div>
+        </div>
+      </details>
+      <!-- Spare from 60Hz Drop -->
+
+      <!-- Spare from 60Hz Drop — per-app/game -->
+      <div class="popup-block" id="popup-spare60-block">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+            <span class="mono popup-block-label">🛡 SPARE FROM 60HZ DROP</span>
+            <span class="mono" style="font-size:8.5px;color:var(--dim);">Never drop to 60Hz while active</span>
+          </div>
+          <button id="popup-spare60-btn" class="gaming-toggle-btn popup-toggle-btn popup-toggle-btn--danger" aria-pressed="false">
+            <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+            <span class="popup-toggle-label mono" id="popup-spare60-label">OFF</span>
+          </button>
+        </div>
+      </div>
+      <!-- Enable Tweaks (Encore Integration) -->
+      <details class="popup-block popup-collapsible popup-encore-block" id="popup-encore-block">
+        <summary class="popup-collapsible-summary">
+          <span class="mono popup-block-label">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px;margin-right:4px;opacity:0.7"><path d="M15.54 8.46C17.5 10.42 17.5 13.58 15.54 15.54S10.42 17.5 8.47 15.54 6.5 10.42 8.47 8.46 13.58 6.5 15.54 8.46M19.47 4.55C19.47 4.55 18.5 4.67 17.43 5.36C17.28 4.32 16.78 3.27 15.93 2.42C14.68 3.66 14.53 5.22 14.83 6.34C16.22 6.7 17.3 7.78 17.66 9.17C18.78 9.47 20.34 9.32 21.58 8.07C20.74 7.23 19.71 6.74 18.68 6.58C19.07 6 19.38 5.33 19.47 4.55M4.53 19.45C4.53 19.45 5.5 19.33 6.57 18.64C6.72 19.68 7.22 20.73 8.07 21.58C9.32 20.34 9.47 18.78 9.17 17.66C7.78 17.3 6.7 16.22 6.34 14.83C5.22 14.53 3.66 14.68 2.42 15.93C3.26 16.77 4.29 17.27 5.32 17.42C4.93 18 4.62 18.68 4.53 19.45Z"/></svg>ENABLE TWEAKS
+          </span>
+          <span class="popup-block-val" id="popup-encore-summary-val">OFF</span>
+          <span class="popup-collapse-arrow">▾</span>
+        </summary>
+        <div class="popup-collapsible-body">
+          <div class="popup-encore-row" style="margin-bottom:6px;">
+            <div class="popup-encore-info">
+              <span class="popup-encore-sub mono">Encore Tweaks per-app profile</span>
+            </div>
+            <button id="popup-encore-btn" class="gaming-toggle-btn popup-toggle-btn popup-toggle-btn--danger" aria-pressed="false" aria-label="Enable Encore Tweaks" onclick="toggleEncoreBtn()">
+              <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+              <span class="popup-toggle-label mono" id="popup-encore-label">OFF</span>
+            </button>
+          </div>
+          <!-- Sub-options: show only when enabled -->
+          <div id="popup-encore-sub-opts" class="popup-encore-subopts" style="display:none;">
+            <label class="encore-sub-row">
+              <input type="checkbox" id="encore-litemode-cb" class="encore-cb">
+              <span class="encore-cb-box"></span>
+              <span class="mono encore-sub-label">LITE MODE</span>
+              <span class="mono encore-sub-hint">battery over peak perf</span>
+              <span class="mono encore-enforced-note" id="encore-enforced-note" style="display:none;">· GLOBAL</span>
+            </label>
+            <label class="encore-sub-row">
+              <input type="checkbox" id="encore-dnd-cb" class="encore-cb">
+              <span class="encore-cb-box"></span>
+              <span class="mono encore-sub-label">DO NOT DISTURB</span>
+              <span class="mono encore-sub-hint">block notifs &amp; calls</span>
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <!-- Kill Others On Launch -->
+      <div class="popup-block" id="popup-ko-block">
+        <div class="popup-encore-row">
+          <div class="popup-encore-info">
+            <span class="mono popup-block-label">⏹ KILL OTHERS ON LAUNCH</span>
+            <span class="popup-encore-sub mono">Force-stop background apps when this game launches</span>
+          </div>
+          <button id="popup-ko-btn" class="gaming-toggle-btn popup-toggle-btn popup-toggle-btn--danger" aria-pressed="false">
+            <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+            <span class="popup-toggle-label mono" id="popup-ko-label">OFF</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Connection On Launch -->
+      <div class="popup-block" id="popup-conn-block">
+        <div class="popup-encore-row" style="align-items:center;">
+          <div class="popup-encore-info">
+            <span class="mono popup-block-label" id="popup-conn-label-text">CONNECTION ON LAUNCH</span>
+            <span class="popup-encore-sub mono">Toggle WiFi / Data when this game opens</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+            <button id="popup-conn-wifi-btn" aria-label="WiFi"
+              style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 10px;border-radius:8px;border:1.5px solid var(--border);background:transparent;cursor:pointer;color:var(--dim);transition:all 0.15s;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 12.55a11 11 0 0 1 14.08 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.42 9a16 16 0 0 1 21.16 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M8.53 16.11a6 6 0 0 1 6.95 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="12" cy="20" r="1" fill="currentColor"/>
+              </svg>
+              <span class="mono" style="font-size:8px;letter-spacing:0.08em;">WIFI</span>
+            </button>
+            <button id="popup-conn-data-btn" aria-label="Data"
+              style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 10px;border-radius:8px;border:1.5px solid var(--border);background:transparent;cursor:pointer;color:var(--dim);transition:all 0.15s;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="2" y="13" width="4" height="8" rx="1" fill="currentColor" opacity="0.5"/>
+                <rect x="9" y="9" width="4" height="12" rx="1" fill="currentColor" opacity="0.75"/>
+                <rect x="16" y="4" width="4" height="17" rx="1" fill="currentColor"/>
+              </svg>
+              <span class="mono" style="font-size:8px;letter-spacing:0.08em;">DATA</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cache Clear On Launch -->
+      <div class="popup-block" id="popup-cache-block">
+        <div class="popup-encore-row">
+          <div class="popup-encore-info">
+            <span class="mono popup-block-label">🗑 CLEAR CACHE ON LAUNCH</span>
+            <span class="popup-encore-sub mono">Triggers CLEAR SELECTED in Cache Manager on launch</span>
+          </div>
+          <button id="popup-cache-btn" class="gaming-toggle-btn popup-toggle-btn popup-toggle-btn--danger" aria-pressed="false">
+            <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+            <span class="popup-toggle-label mono" id="popup-cache-label">OFF</span>
+          </button>
+        </div>
+      </div>
+
+      </div><!-- /popup-scroll-body -->
+    </div>
+  </div>
+
+
+
+  <!-- ═══ CACHE CLEAR POPUP ═══ -->
+  <div id="cache-clear-popup" class="app-config-bubble-overlay" role="dialog" aria-modal="true" aria-label="Cache Clear on Launch" style="display:none;">
+    <div class="app-config-bubble ko-spare-popup-card">
+      <!-- Header -->
+      <div class="app-config-bubble-header">
+        <span style="font-size:16px;">🗑</span>
+        <div style="flex:1;min-width:0;">
+          <div class="mono" style="font-size:10px;color:var(--a);letter-spacing:0.08em;">CLEAR CACHE ON LAUNCH</div>
+          <div class="mono" id="cache-popup-pkg" style="font-size:9px;opacity:0.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+        </div>
+        <button id="cache-popup-close" class="app-config-close" aria-label="Close">✕</button>
+      </div>
+
+      <!-- Toggle -->
+      <div class="popup-block" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:6px;">
+        <div>
+          <div class="mono" style="font-size:10px;color:#f87171;letter-spacing:0.05em;">CLEAR ALL USER APP CACHES ON LAUNCH</div>
+          <div class="mono" id="cache-popup-count" style="font-size:9px;opacity:0.5;margin-top:2px;">0 apps spared</div>
+        </div>
+        <button class="gaming-toggle-btn popup-toggle-btn popup-toggle-btn--danger" id="cache-popup-toggle" aria-pressed="false">
+          <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+          <span class="mono popup-toggle-label" id="cache-popup-toggle-label">OFF</span>
+        </button>
+      </div>
+
+      <!-- Search -->
+      <div class="search-wrap" style="margin-bottom:6px;">
+        <span class="search-icon mono">⌕</span>
+        <input id="cache-popup-search" class="app-search-input" type="search"
+          placeholder="Filter apps…" autocomplete="off" spellcheck="false">
+        <button id="cache-popup-search-clear" class="search-clear" aria-label="Clear" hidden>✕</button>
+      </div>
+
+      <!-- Tabs: Spared + All user apps only (system tab removed) -->
+      <div class="app-tab-bar" role="tablist" style="margin-bottom:6px;">
+        <button class="app-tab" id="cache-popup-tab-spared" data-cachetab="spared" role="tab" aria-selected="false">
+          <span class="mono">🛡 SPARED</span>
+          <span class="app-tab-count mono" id="cache-popup-count-spared">0</span>
+        </button>
+        <button class="app-tab app-tab--active" id="cache-popup-tab-all" data-cachetab="all" role="tab" aria-selected="true">
+          <span class="mono">USER</span>
+          <span class="app-tab-count mono" id="cache-popup-count-all">—</span>
+        </button>
+      </div>
+
+      <!-- App list -->
+      <div id="cache-popup-list" class="app-list ko-popup-list-flex"></div>
+
+      <!-- Done -->
+      <button id="cache-popup-done" class="nexus-btn nexus-btn--full" style="margin-top:10px;">✓ DONE</button>
+    </div>
+  </div>
+
+  <!-- ═══ KO SPARE POPUP ═══ -->
+  <div id="ko-spare-popup" class="app-config-bubble-overlay" role="dialog" aria-modal="true" aria-label="Spare from Kill" style="display:none;">
+    <div class="app-config-bubble ko-spare-popup-card">
+      <!-- Header -->
+      <div class="app-config-bubble-header">
+        <span style="font-size:16px;">🛡</span>
+        <div style="flex:1;min-width:0;">
+          <div class="mono" id="ko-popup-title" style="font-size:10px;color:var(--a);letter-spacing:0.08em;">SPARE FROM KILL</div>
+          <div class="mono" id="ko-popup-pkg" style="font-size:9px;opacity:0.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+        </div>
+        <button id="ko-popup-close" class="app-config-close" aria-label="Close">✕</button>
+      </div>
+
+      <!-- Toggle Kill Others on/off -->
+      <div class="popup-block" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:6px;">
+        <div>
+          <div class="mono" style="font-size:10px;color:#ff7f8a;letter-spacing:0.05em;">KILL OTHERS ON LAUNCH</div>
+          <div class="mono" id="ko-popup-spared-count" style="font-size:9px;opacity:0.5;margin-top:2px;">0 apps spared</div>
+        </div>
+        <button class="gaming-toggle-btn popup-toggle-btn popup-toggle-btn--danger" id="ko-popup-toggle" aria-pressed="false">
+          <span class="popup-toggle-track"><span class="popup-toggle-thumb"></span></span>
+          <span class="mono popup-toggle-label" id="ko-popup-toggle-label">OFF</span>
+        </button>
+      </div>
+
+      <!-- Spare app search -->
+      <div class="search-wrap" style="margin-bottom:6px;">
+        <span class="search-icon mono">⌕</span>
+        <input id="ko-popup-search" class="app-search-input" type="search"
+          placeholder="Filter apps…" autocomplete="off" spellcheck="false">
+        <button id="ko-popup-search-clear" class="search-clear" aria-label="Clear" hidden>✕</button>
+      </div>
+
+      <!-- Tabs: Spared / All -->
+      <div class="app-tab-bar" role="tablist" style="margin-bottom:6px;">
+        <button class="app-tab" id="ko-popup-tab-spared" data-koptab="spared" role="tab" aria-selected="false">
+          <span class="mono">🛡 SPARED</span>
+          <span class="app-tab-count mono" id="ko-popup-count-spared">0</span>
+        </button>
+        <button class="app-tab app-tab--active" id="ko-popup-tab-all" data-koptab="all" role="tab" aria-selected="true">
+          <span class="mono">ALL</span>
+          <span class="app-tab-count mono" id="ko-popup-count-all">—</span>
+        </button>
+      </div>
+
+      <!-- Spare list -->
+      <div id="ko-popup-list" class="app-list ko-popup-list-flex"></div>
+
+      <!-- Done button -->
+      <button id="ko-popup-done" class="nexus-btn nexus-btn--full" style="margin-top:10px;">✓ DONE</button>
+    </div>
+  </div>
+
+  <!-- CL CONNECTION POPUP REMOVED — gear cycles inline -->
+
+
+    <!-- ═══════════ ZRAM MANAGER · MEMORY ═══════════ -->
+
+
+  <!-- Toast: outside .main so it never scrolls -->
+  <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="script.js"></script>
+
+  <!-- ── IDLE DELAY BOTTOM SHEET ─────────────────────────────────────── -->
+  <div id="idle-delay-sheet-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.55);backdrop-filter:blur(2px);" onclick="_closeIdleDelaySheet()"></div>
+  <div id="idle-delay-sheet" style="display:none;position:fixed;left:50%;bottom:0;transform:translateX(-50%);z-index:9001;
+    background:var(--bg2);border:1px solid var(--bdr);border-top-left-radius:16px;border-top-right-radius:16px;
+    width:min(400px,100vw);padding:0 0 24px 0;box-shadow:0 -4px 32px rgba(0,0,0,0.6);">
+    <!-- Handle bar -->
+    <div style="display:flex;justify-content:center;padding:10px 0 6px;">
+      <div style="width:36px;height:4px;border-radius:2px;background:var(--bdr);"></div>
+    </div>
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 18px 12px;">
+      <span class="mono" style="font-size:11px;letter-spacing:0.12em;color:var(--a);font-weight:700;">⚙ IDLE DELAY</span>
+      <button onclick="_closeIdleDelaySheet()" style="background:none;border:none;color:var(--dim);font-size:16px;cursor:pointer;padding:4px 6px;border-radius:6px;">✕</button>
+    </div>
+    <!-- Delay options -->
+    <div style="display:flex;flex-direction:column;gap:6px;padding:0 14px;" id="univ-idle60-delay-btns">
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="2">
+        <span style="color:var(--a);font-weight:700;">2S</span><span style="color:var(--dim);"> — INSTANT</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="3">
+        <span style="color:var(--a);font-weight:700;">3S</span><span style="color:var(--dim);"> — FAST</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="5">
+        <span style="color:var(--a);font-weight:700;">5S</span><span style="color:var(--dim);"> — NORMAL</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="8">
+        <span style="color:var(--a);font-weight:700;">8S</span><span style="color:var(--dim);"> — SLOW</span>
+      </button>
+      <button class="nexus-btn idle-delay-opt" style="padding:11px 16px;font-size:11px;text-align:left;border-radius:10px;letter-spacing:0.06em;" data-udelay="10">
+        <span style="color:var(--a);font-weight:700;">10S</span><span style="color:var(--dim);"> — VERY SLOW</span>
+      </button>
+    </div>
+  </div>
+
+</body>
+</html>

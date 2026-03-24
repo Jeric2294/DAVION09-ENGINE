@@ -1,0 +1,24 @@
+
+# 1. Focus on Throughput (Performance)
+setprop debug.hwui.render_ahead 2
+setprop debug.egl.hw 1
+setprop debug.cpurendering false
+setprop debug.egl.force_msaa false
+setprop persist.sys.ui.hw 1
+setprop persist.sys.use_dithering 0
+setprop core_ctl_isolated 1
+
+# Disable some sync delays to let frames fly
+setprop debug.sf.latch_unsignaled 1
+setprop debug.sf.disable_backpressure 1
+
+# Zeta: disable 60FPS game cap (AOSP 15+)
+setprop debug.graphics.game_default_frame_rate.disabled true
+
+# Zeta: lock display to max supported Hz
+ZETA_MAX_RATE=$(cmd display dump 2>/dev/null | grep -Eo 'fps=[0-9.]+' | cut -f2 -d= | sort -nr | head -n1 | cut -d. -f1)
+if [ -n "$ZETA_MAX_RATE" ] && [ "$ZETA_MAX_RATE" -gt 60 ] 2>/dev/null; then
+    settings put system min_refresh_rate "$ZETA_MAX_RATE"  2>/dev/null
+    settings put system peak_refresh_rate "$ZETA_MAX_RATE" 2>/dev/null
+    resetprop ro.surface_flinger.game_default_frame_rate_override "$ZETA_MAX_RATE" 2>/dev/null
+fi

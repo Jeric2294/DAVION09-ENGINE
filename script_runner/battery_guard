@@ -1,0 +1,536 @@
+#!/system/bin/sh
+# ══════════════════════════════════════════════════════════
+#  BATTERY GUARD — Low Battery + Video Call + Screen Record
+#  MT6893 (Dimensity 900) · TECNO CK8n · Android 14
+#  LIGHTWEIGHT — no dumpsys polling, uses /proc only
+# ══════════════════════════════════════════════════════════
+
+MOD_DIR="/data/adb/modules/GovThermal"
+CFG_DIR="/sdcard/GovThermal/config"
+EXTERNAL_CFG="/sdcard/DAVION_ENGINE"
+GUARD_FLAG="$CFG_DIR/battery_guard_enabled"
+LOG_FILE="$EXTERNAL_CFG/DAVION_ENGINE.log"
+THRESHOLD_FILE="$CFG_DIR/battery_guard_threshold"
+STATE_FILE="/dev/.davion_batt_guard_state"
+
+BB="$MOD_DIR/busybox"
+[ -x "$BB" ] && {
+    grep() { "$BB" grep "$@"; }
+    awk()  { "$BB" awk  "$@"; }
+}
+
+log_guard() { echo "[$(date '+%H:%M:%S')] [BATT-GUARD] $1" >> "$LOG_FILE" 2>/dev/null; }
+
+sv()  { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
+svx() { chmod 644 "$1" 2>/dev/null; sv "$1" "$2"; }
+
+read_batt() {
+    local cap
+    cap=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null \
+       || cat /sys/class/power_supply/Battery/capacity 2>/dev/null \
+       || echo 100)
+    echo "${cap:-100}"
+}
+
+read_threshold() {
+    local t
+    t=$(cat "$THRESHOLD_FILE" 2>/dev/null | tr -d ' \r\n')
+    [ -n "$t" ] && [ "$t" -ge 1 ] && [ "$t" -le 99 ] 2>/dev/null && echo "$t" || echo 20
+}
+
+# ── Detect camera actually in use (hardware-level) ────────
+is_camera_active() {
+    for vdev in /dev/video0 /dev/video1 /dev/video2; do
+        [ -c "$vdev" ] && fuser "$vdev" 2>/dev/null | grep -q "[0-9]" && return 0
+    done
+    for f in /sys/class/mtk_camera/camera/status /proc/mtk_cam/status; do
+        [ -f "$f" ] && cat "$f" 2>/dev/null | grep -qi "active\|opened\|1" && return 0
+    done
+    return 1
+}
+
+# ── Detect screen recording via process check ─────────────
+is_screen_recording() {
+    for cmdline_file in /proc/[0-9]*/cmdline; do
+        local pname
+        pname=$(cat "$cmdline_file" 2>/dev/null | tr "\0" "\n" | head -1)
+        case "$pname" in
+            *screenrecord*|com.transsion.screenrecorder|com.miui.screenrecorder|com.coloros.screenrecorder|com.android.screenrecorder|com.hecorat.screenrecorder*)
+                return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# ── Guard if camera open OR VoIP audio active ────────────
+is_video_call_active() {
+    is_camera_active && return 0
+    local mode
+    for f in /sys/class/misc/audiohal/audio_mode /sys/kernel/audio/mode /proc/audio/mode; do
+        [ -f "$f" ] && mode=$(cat "$f" 2>/dev/null | tr -d "[:space:]") && [ "$mode" = "3" ] && return 0
+    done
+    return 1
+}
+
+apply_guard() {
+    local batt="$1" reason="$2" skip_low_power="${3:-0}" skip_schedutil="${4:-0}"
+    log_guard "GUARD ACTIVE -- $reason (battery: ${batt}%)"
+
+    # 1. MTK OC Throttle
+    svx /proc/mtk_batoc_throttling/battery_oc_protect_stop "stop 1"
+    svx /proc/mtk_batoc_throttling/battery_oc_protect_level "0"
+    svx /proc/batoc_throttling/battery_oc_protect_stop "stop 1"
+
+    # 2. PPM -- disable throttle + enable sys_boost
+    if [ -f /proc/ppm/policy_status ]; then
+        awk -F'"'"'[][]'"'"' '"'"'/PWR_THRO|THERMAL|FORCE_LIMIT/{print $2}'"'"'             /proc/ppm/policy_status 2>/dev/null | while read -r idx; do
+            [ -n "$idx" ] && echo "$idx 0" > /proc/ppm/policy_status 2>/dev/null
+        done
+        awk -F'"'"'[][]'"'"' '"'"'/SYS_BOOST/{print $2}'"'"'             /proc/ppm/policy_status 2>/dev/null | while read -r idx; do
+            [ -n "$idx" ] && echo "$idx 1" > /proc/ppm/policy_status 2>/dev/null
+        done
+    fi
+
+    # 3. FPSGO -- disable MTK frame governor interference
+    sv /sys/kernel/fpsgo/common/fpsgo_enable     0
+    sv /sys/kernel/fpsgo/common/force_onoff      2
+    sv /sys/kernel/fpsgo/fbt/thrm_enable         0
+    sv /sys/kernel/fpsgo/fbt/switch_idleprefer   0
+    sv /sys/kernel/fpsgo/fbt/enable_ceiling      0
+    sv /sys/kernel/fpsgo/fstb/fstb_self_ctrl_fps_enable 0
+    sv /sys/kernel/fpsgo/common/stop_boost       1
+    chmod 644 /sys/kernel/fpsgo/fbt/thrm_limit_cpu 2>/dev/null
+    echo "-1" > /sys/kernel/fpsgo/fbt/thrm_limit_cpu 2>/dev/null
+
+    # 4. Thermal zones + tzcpu raised to 110C
+    sv /proc/driver/thermal/tzbattery        "1 90000 0 mtktsbattery-sysrst 0 0 no-cooler 0 0 no-cooler 0 0"
+    sv /proc/driver/thermal/tzcpu        "3 110000 0 mtktscpu-sysrst 90000 0 cpu_adaptive_0 82000 0 cpu_adaptive_1 0 0 no-cooler 0 0 no-cooler 0 0"
+    sv /sys/kernel/fpsgo/fbt/thrm_temp_th 110
+    for zone in /sys/class/thermal/thermal_zone*; do
+        [ -f "$zone/mode" ] && echo "disabled" > "$zone/mode" 2>/dev/null
+    done
+    # thermalservice override - status 0 = no override (allow full perf)
+    cmd thermalservice override-status 0 2>/dev/null
+    # Mali GPU throttling files
+    chmod 000 /sys/devices/*.mali/throttling1 2>/dev/null
+    chmod 000 /sys/devices/*.mali/throttling2 2>/dev/null
+    chmod 000 /sys/devices/*.mali/throttling3 2>/dev/null
+    chmod 000 /sys/devices/*.mali/throttling4 2>/dev/null
+
+    # 5. DLPT
+    sv /proc/mtk_battery_cmd/current_cmd "0 0"
+    sv /proc/mtk_battery_cmd/en_power_source "0"
+    sv /sys/devices/platform/battery/Low_Battery_Protect "0"
+
+    # 6. Battery saver
+    if [ "$skip_low_power" = "0" ]; then
+        settings put global low_power 0 2>/dev/null
+        settings put global low_power_sticky 0 2>/dev/null
+        settings put global low_power_trigger_level 0 2>/dev/null
+    fi
+
+    # 7. ULPM (Ultra Low Power Mode) disable
+    sv /sys/module/mtk_lpm/parameters/ulpm_disable 1
+    sv /proc/mtk_lpm/ulpm_state 0
+
+    # 8. CPU -- floor 50% per cluster + remove thermal caps
+    #    rate_limit_us = 2000 (NOT 500 -- 500 causes CPU overhead)
+    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -d "$POLICY" ] || continue
+        MAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        [ "$MAX" -le 0 ] && continue
+        POL_NUM=$(basename "$POLICY" | tr -dc "0-9")
+        case "$POL_NUM" in
+            0) PCT=50 ;; 4) PCT=55 ;; 7) PCT=50 ;; *) PCT=45 ;;
+        esac
+        FLOOR=$(( MAX * PCT / 100 ))
+        CUR_MIN=$(cat "$POLICY/scaling_min_freq" 2>/dev/null || echo 0)
+        [ "$CUR_MIN" -lt "$FLOOR" ] 2>/dev/null && svx "$POLICY/scaling_min_freq" "$FLOOR"
+        MAX_CAP=$(cat "$POLICY/scaling_max_freq" 2>/dev/null || echo 0)
+        [ "$MAX_CAP" -lt "$MAX" ] && [ "$MAX_CAP" -gt 0 ] 2>/dev/null &&             svx "$POLICY/scaling_max_freq" "$MAX"
+        # Only force schedutil when no higher-priority governor manager is active
+        [ "$skip_schedutil" = "0" ] && sv "$POLICY/scaling_governor" schedutil
+    done
+    [ -f /sys/devices/virtual/thermal/thermal_message/cpu_limits ] &&         for i in 0 4 7; do echo "cpu$i 9999999" > /sys/devices/virtual/thermal/thermal_message/cpu_limits 2>/dev/null; done
+
+    # 9. schedutil -- rate_limit_us 2000 (optimal for recording, not 500)
+    if [ "$skip_schedutil" = "0" ]; then
+        for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+            [ -d "$POLICY" ] || continue
+            PMAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+            for SU_PATH in "$POLICY/schedutil" "$POLICY/schedhorizon"                            "$POLICY/schedutil_plus" "$POLICY/uag"; do
+                [ -d "$SU_PATH" ] || continue
+                sv "$SU_PATH/rate_limit_us"      "2000"
+                sv "$SU_PATH/up_rate_limit_us"   "2000"
+                sv "$SU_PATH/down_rate_limit_us" "5000"
+                sv "$SU_PATH/hispeed_load"       "80"
+                [ "$PMAX" -gt 0 ] && sv "$SU_PATH/hispeed_freq" "$(( PMAX * 80 / 100 ))"
+            done
+        done
+        sv /dev/stune/top-app/schedtune.boost "30"
+        sv /dev/stune/top-app/schedtune.sched_boost_enabled "1"
+        sv /dev/stune/top-app/schedtune.prefer_idle "0"
+        sv /dev/stune/foreground/schedtune.boost "15"
+    fi
+
+    # 10. CPU cores -- all online, disable core_ctl
+    for cpu in cpu0 cpu1 cpu2 cpu3 cpu4 cpu5 cpu6 cpu7; do
+        [ -f "/sys/devices/system/cpu/$cpu/online" ] &&             sv "/sys/devices/system/cpu/$cpu/online" 1
+    done
+    for path in /sys/devices/system/cpu/cpu*/core_ctl/enable; do sv "$path" 0; done
+    if [ -f /sys/devices/system/cpu/sched/set_sched_deisolation ]; then
+        for i in 0 1 2 3 4 5 6 7; do
+            echo "$i" > /sys/devices/system/cpu/sched/set_sched_deisolation 2>/dev/null
+        done
+    fi
+
+    # 11. GPU -- simple_ondemand + bypass power limits + GED bottom_freq
+    for GPU_PATH in /sys/class/devfreq/*mali* /sys/class/devfreq/*gpufreq* /sys/class/devfreq/*gpu*; do
+        [ -d "$GPU_PATH" ] || continue
+        AVAIL=$(cat "$GPU_PATH/available_governors" 2>/dev/null)
+        echo "$AVAIL" | grep -q "simple_ondemand" && echo "simple_ondemand" > "$GPU_PATH/governor" 2>/dev/null
+        GPU_MAX=$(cat "$GPU_PATH/max_freq" 2>/dev/null || echo 0)
+        [ "$GPU_MAX" -gt 0 ] && echo "$GPU_MAX" > "$GPU_PATH/max_freq" 2>/dev/null
+    done
+    # gpufreqv2 power limit bypass (critical for recording fps)
+    for f in /proc/gpufreqv2/gpufreq_power_limited /proc/gpufreq/gpufreq_power_limited; do
+        [ -f "$f" ] && {
+            echo "ignore_thermal_protect 1" > "$f" 2>/dev/null
+            echo "ignore_pbm_limited 1"     > "$f" 2>/dev/null
+            echo "ignore_batt_percent 1"    > "$f" 2>/dev/null
+        }
+    done
+    # GED GPU bottom frequency floor
+    sv /sys/module/ged/parameters/g_fb_dvfs_threshold 80
+    sv /sys/module/ged/parameters/gpu_bottom_freq     500000
+    sv /sys/module/sspm_v3/holders/ged/parameters/is_GED_KPI_enabled 0
+
+    # 12. DRAM + EEM
+    sv /sys/devices/platform/boot_dramboost/dramboost/dramboost "1"
+    sv /sys/module/mtk_dvfsrc/parameters/force_opp "0"
+    sv /proc/eem/EEM_DET_B/eem_offset "0"
+    sv /proc/eem/EEM_DET_L/eem_offset "0"
+    sv /proc/eemg/EEMG_DET_GPU/eemg_offset "0"
+
+    # 13. Media process affinity + real-time priority
+    for proc in mediaserver media.codec android.media; do
+        for pid in $(pgrep -f "$proc" 2>/dev/null); do
+            for tid_path in /proc/"$pid"/task/*; do
+                echo "${tid_path##*/}" > /dev/cpuset/top-app/tasks 2>/dev/null
+            done
+            renice -n -10 -p "$pid" 2>/dev/null
+            chrt -r -p 15 "$pid" 2>/dev/null
+        done
+    done
+    for pid in $(pgrep surfaceflinger 2>/dev/null); do
+        for tid_path in /proc/"$pid"/task/*; do
+            echo "${tid_path##*/}" > /dev/cpuset/foreground/tasks 2>/dev/null
+        done
+        renice -n -15 -p "$pid" 2>/dev/null
+    done
+
+    # 14. Kernel scheduler latency
+    sv /proc/sys/kernel/sched_latency_ns           8000000
+    sv /proc/sys/kernel/sched_min_granularity_ns   2000000
+    sv /proc/sys/kernel/sched_wakeup_granularity_ns 1000000
+
+    # 15. I/O -- mq-deadline for UFS, read_ahead 512
+    for block in sda sdb sdc mmcblk0 mmcblk1; do
+        DEV="/sys/block/$block"
+        [ -d "$DEV" ] || continue
+        for sched in mq-deadline deadline noop; do
+            echo "$sched" > "$DEV/queue/scheduler" 2>/dev/null && break
+        done
+        sv "$DEV/queue/read_ahead_kb" 512
+        sv "$DEV/queue/nr_requests"   128
+        sv "$DEV/queue/rq_affinity"   2
+        sv "$DEV/queue/add_random"    0
+    done
+
+    # 16. Memory
+    sv /proc/sys/vm/swappiness               60
+    sv /proc/sys/vm/dirty_ratio              20
+    sv /proc/sys/vm/dirty_background_ratio    5
+
+    echo "1" > "$STATE_FILE" 2>/dev/null
+}
+
+restore_normal() {
+    local batt="$1"
+    log_guard "Guard released -- battery ${batt}%"
+
+    # 1. Re-enable FPSGO
+    sv /sys/kernel/fpsgo/common/fpsgo_enable  1
+    sv /sys/kernel/fpsgo/common/force_onoff   0
+    sv /sys/kernel/fpsgo/fbt/thrm_enable      1
+    sv /sys/kernel/fpsgo/fbt/enable_ceiling   1
+    sv /sys/kernel/fpsgo/fstb/fstb_self_ctrl_fps_enable 1
+    sv /sys/kernel/fpsgo/common/stop_boost    0
+    chmod 644 /sys/kernel/fpsgo/fbt/thrm_limit_cpu 2>/dev/null
+    echo "0" > /sys/kernel/fpsgo/fbt/thrm_limit_cpu 2>/dev/null
+
+    # 2. Restore CPU min freq to hw_min
+    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -d "$POLICY" ] || continue
+        HW_MIN=$(cat "$POLICY/cpuinfo_min_freq" 2>/dev/null || echo 0)
+        HW_MAX=$(cat "$POLICY/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        [ "$HW_MIN" -gt 0 ] && svx "$POLICY/scaling_min_freq" "$HW_MIN"
+        [ "$HW_MAX" -gt 0 ] && svx "$POLICY/scaling_max_freq" "$HW_MAX"
+    done
+
+    # 3. schedutil based on active profile — but if Encore is still managing governor,
+    #    restore the saved governor for the active profile instead of tuning schedutil params
+    ACTIVE_PROFILE=$(cat "$CFG_DIR/active_profile" 2>/dev/null | tr -d '[:space:]' || echo "balanced")
+    if [ -f /dev/.encore_tweaks_active ]; then
+        # Encore is still active — re-read and re-apply the saved governor for this profile
+        ENCORE_GOV=$(tr -d '[:space:]' < "$CFG_DIR/gov_${ACTIVE_PROFILE}" 2>/dev/null)
+        if [ -n "$ENCORE_GOV" ]; then
+            for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+                [ -f "$POLICY/scaling_governor" ] || continue
+                chmod 644 "$POLICY/scaling_governor" 2>/dev/null
+                echo "$ENCORE_GOV" > "$POLICY/scaling_governor" 2>/dev/null
+            done
+            log_guard "Guard released with Encore active — governor restored to $ENCORE_GOV"
+        fi
+    fi
+    case "$ACTIVE_PROFILE" in
+        performance) UP=2000;  DOWN=5000  ;;
+        powersave)   UP=15000; DOWN=30000 ;;
+        *)           UP=7500;  DOWN=14000 ;;
+    esac
+    for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -d "$POLICY" ] || continue
+        for SU_PATH in "$POLICY/schedutil" "$POLICY/schedhorizon" \
+                       "$POLICY/schedutil_plus" "$POLICY/uag"; do
+            [ -d "$SU_PATH" ] || continue
+            sv "$SU_PATH/rate_limit_us"      "$UP"
+            sv "$SU_PATH/up_rate_limit_us"   "$UP"
+            sv "$SU_PATH/down_rate_limit_us" "$DOWN"
+        done
+    done
+
+    # 4. schedtune restore
+    case "$ACTIVE_PROFILE" in
+        performance) sv /dev/stune/top-app/schedtune.boost "50" ;;
+        powersave)   sv /dev/stune/top-app/schedtune.boost "0"  ;;
+        *)           sv /dev/stune/top-app/schedtune.boost "10" ;;
+    esac
+    sv /dev/stune/foreground/schedtune.boost "0"
+
+    # 5. PPM restore
+    if [ -f /proc/ppm/policy_status ]; then
+        awk -F'[][]' '/PWR_THRO|THERMAL|FORCE_LIMIT/{print $2}' \
+            /proc/ppm/policy_status 2>/dev/null | while read -r idx; do
+            [ -n "$idx" ] && echo "$idx 1" > /proc/ppm/policy_status 2>/dev/null
+        done
+    fi
+
+    # 6. GPU restore governor based on profile
+    for GPU_PATH in /sys/class/devfreq/*mali* /sys/class/devfreq/*gpu*; do
+        [ -d "$GPU_PATH" ] || continue
+        AVAIL=$(cat "$GPU_PATH/available_governors" 2>/dev/null)
+        case "$ACTIVE_PROFILE" in
+            performance) echo "$AVAIL" | grep -q "simple_ondemand" && \
+                echo "simple_ondemand" > "$GPU_PATH/governor" 2>/dev/null ;;
+            *) echo "$AVAIL" | grep -q "powersave" && \
+                echo "powersave" > "$GPU_PATH/governor" 2>/dev/null ;;
+        esac
+    done
+    sv /sys/module/sspm_v3/holders/ged/parameters/is_GED_KPI_enabled 1
+
+    # 7. Thermal restore — unlock all locked files first
+    # Resume frozen thermal processes
+    for pid in $(pgrep -f "thermal" 2>/dev/null); do
+        kill -SIGCONT "$pid" 2>/dev/null
+    done
+    # Unlock virtual thermal dir
+    find /sys/devices/virtual/thermal -exec chmod 644 {} + 2>/dev/null
+    chmod 644 /sys/class/thermal/thermal_zone0/thm_enable 2>/dev/null
+    # Unlock tzcpu and restore
+    chmod 644 /proc/driver/thermal/tzcpu 2>/dev/null
+    if [ -f /proc/driver/thermal/tzcpu ]; then
+        echo "3 117000 0 mtktscpu-sysrst 85000 0 cpu_adaptive_0 76000 0 cpu_adaptive_1 0 0 no-cooler 0 0" \
+            > /proc/driver/thermal/tzcpu 2>/dev/null
+    fi
+    for f in /proc/driver/thermal/tzpmic /proc/driver/thermal/tzbattery \
+              /proc/driver/thermal/tzcharger /proc/driver/thermal/tzwmt \
+              /proc/driver/thermal/tzbts /proc/driver/thermal/tzpa; do
+        chmod 644 "$f" 2>/dev/null
+    done
+    # -1 clears thermalservice override entirely
+    cmd thermalservice override-status -1 2>/dev/null
+    sv /sys/kernel/fpsgo/fbt/thrm_temp_th 85
+    # Restore Mali files (tmu + throttling1-4 + tripping)
+    chmod 644 /sys/devices/*.mali/tmu 2>/dev/null
+    chmod 644 /sys/devices/*.mali/throttling1 2>/dev/null
+    chmod 644 /sys/devices/*.mali/throttling2 2>/dev/null
+    chmod 644 /sys/devices/*.mali/throttling3 2>/dev/null
+    chmod 644 /sys/devices/*.mali/throttling4 2>/dev/null
+    chmod 644 /sys/devices/*.mali/tripping 2>/dev/null
+    # Restore GPU power limits
+    for f in /proc/gpufreqv2/gpufreq_power_limited /proc/gpufreq/gpufreq_power_limited; do
+        chmod 644 "$f" 2>/dev/null
+        [ -f "$f" ] && {
+            echo "ignore_thermal_protect 0" > "$f" 2>/dev/null
+            echo "ignore_pbm_limited 0"     > "$f" 2>/dev/null
+            echo "ignore_batt_percent 0"    > "$f" 2>/dev/null
+            echo "ignore_batt_oc 0"         > "$f" 2>/dev/null
+            echo "ignore_low_batt 0"        > "$f" 2>/dev/null
+        }
+    done
+    # Re-enable thermal zones only if gaming thermal not active
+    if [ ! -f "$CFG_DIR/thermal_state" ] || \
+       [ "$(cat "$CFG_DIR/thermal_state" 2>/dev/null)" != "disabled" ]; then
+        for zone in /sys/class/thermal/thermal_zone*; do
+            chmod 644 "$zone/mode" 2>/dev/null
+            [ -f "$zone/mode" ] && echo "enabled" > "$zone/mode" 2>/dev/null
+        done
+    fi
+
+    # 8. Re-enable core_ctl + ULPM
+    for path in /sys/devices/system/cpu/cpu*/core_ctl/enable; do sv "$path" 1; done
+    sv /sys/module/mtk_lpm/parameters/ulpm_disable 0
+    sv /proc/mtk_lpm/ulpm_state 1
+
+    # 9. I/O restore
+    for block in sda sdb sdc mmcblk0 mmcblk1; do
+        DEV="/sys/block/$block"
+        [ -d "$DEV" ] || continue
+        for sched in cfq bfq mq-deadline none noop; do
+            echo "$sched" > "$DEV/queue/scheduler" 2>/dev/null && break
+        done
+        sv "$DEV/queue/read_ahead_kb" 128
+    done
+
+    # 10. Memory restore (HiOS default swappiness=70, NOT 100)
+    sv /proc/sys/vm/swappiness              70
+    sv /proc/sys/vm/dirty_ratio             30
+    sv /proc/sys/vm/dirty_background_ratio  10
+
+    # 11. Media process scheduling restore to SCHED_OTHER
+    for proc in mediaserver media.codec android.media surfaceflinger; do
+        for pid in $(pgrep -f "$proc" 2>/dev/null); do
+            chrt -o -p 0 "$pid" 2>/dev/null
+        done
+    done
+
+    # 12. low_power restore
+    if ! [ -f "$CFG_DIR/low_power_mode" ]; then
+        settings put global low_power_trigger_level 15 2>/dev/null
+    fi
+
+    # 13. Restore EEM voltage offset to profile values (guard sets to 0)
+    local user_eem
+    user_eem=$(tr -d '[:space:]' < "/sdcard/DAVION_ENGINE/eem_voltage_offset.txt" 2>/dev/null)
+    if [ -z "$user_eem" ]; then
+        case "$ACTIVE_PROFILE" in
+            performance)
+                for p in /proc/eem/EEM_DET_B/eem_offset /proc/eem/EEM_DET_BL/eem_offset \
+                         /proc/eem/EEM_DET_L/eem_offset /proc/eem/EEM_DET_CCI/eem_offset; do
+                    [ -f "$p" ] && echo "0" > "$p" 2>/dev/null
+                done ;;
+            powersave)
+                for p in /proc/eem/EEM_DET_B/eem_offset /proc/eem/EEM_DET_BL/eem_offset \
+                         /proc/eem/EEM_DET_L/eem_offset; do
+                    [ -f "$p" ] && echo "-12" > "$p" 2>/dev/null
+                done
+                [ -f /proc/eem/EEM_DET_CCI/eem_offset ]    && echo "-8" > /proc/eem/EEM_DET_CCI/eem_offset 2>/dev/null
+                [ -f /proc/eemg/EEMG_DET_GPU/eemg_offset ] && echo "-8" > /proc/eemg/EEMG_DET_GPU/eemg_offset 2>/dev/null ;;
+            *)  # balanced
+                for p in /proc/eem/EEM_DET_B/eem_offset /proc/eem/EEM_DET_BL/eem_offset \
+                         /proc/eem/EEM_DET_L/eem_offset; do
+                    [ -f "$p" ] && echo "-6" > "$p" 2>/dev/null
+                done
+                [ -f /proc/eem/EEM_DET_CCI/eem_offset ]    && echo "-4" > /proc/eem/EEM_DET_CCI/eem_offset 2>/dev/null
+                [ -f /proc/eemg/EEMG_DET_GPU/eemg_offset ] && echo "-4" > /proc/eemg/EEMG_DET_GPU/eemg_offset 2>/dev/null ;;
+        esac
+    fi
+
+    echo "0" > "$STATE_FILE" 2>/dev/null
+}
+
+is_powersave_active() {
+    local p; p=$(cat "$CFG_DIR/active_profile" 2>/dev/null | tr -d '[:space:]')
+    [ "$p" = "powersave" ]
+}
+is_deepsleep_active()  { [ -f "$CFG_DIR/low_power_mode" ]; }
+is_gaming_mode_active() { [ -f /dev/.davion_engine_active_game ]; }
+# True when Encore Tweaks has set a performance governor for the foreground game
+is_encore_active()     { [ -f /dev/.encore_tweaks_active ]; }
+
+_apply_guard_safe() {
+    local batt="$1" reason="$2"
+    local skip_low_power=0 skip_schedutil=0
+    is_deepsleep_active   && skip_low_power=1
+    # Never overwrite the governor when gaming mode OR Encore tweaks are managing it
+    is_gaming_mode_active && skip_schedutil=1
+    is_encore_active      && skip_schedutil=1
+    # Never overwrite governor when user saved a non-schedutil governor (e.g. sugov_ext)
+    if [ "$skip_schedutil" = "0" ]; then
+        _active_prof=$(cat "$CFG_DIR/active_profile" 2>/dev/null | tr -d '[:space:]')
+        _saved_gov=$(cat "$CFG_DIR/gov_${_active_prof:-balanced}" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$_saved_gov" ]; then
+            case "$_saved_gov" in
+                schedutil|schedhorizon|schedutil_plus) ;;
+                *) skip_schedutil=1 ;;
+            esac
+        fi
+    fi
+    apply_guard "$batt" "$reason" "$skip_low_power" "$skip_schedutil"
+}
+
+# ── Main loop ──────────────────────────────────────────────
+log_guard "Battery Guard started (PID $$) -- lightweight mode"
+echo "0" > "$STATE_FILE" 2>/dev/null
+
+_last_reason=""
+
+while true; do
+    [ ! -f "$GUARD_FLAG" ] && {
+        log_guard "Guard disabled -- exiting"
+        restore_normal 100
+        exit 0
+    }
+
+    BATT=$(read_batt)
+    THRESH=$(read_threshold)
+    CURRENT_STATE=$(cat "$STATE_FILE" 2>/dev/null || echo "0")
+
+    GUARD_NEEDED=0
+    REASON=""
+
+    # Check low battery first (cheapest - just reads a file)
+    if [ "$BATT" -le "$THRESH" ] 2>/dev/null; then
+        GUARD_NEEDED=1
+        REASON="Low battery ${BATT}%"
+    fi
+
+    # Video call / screen record checks (lightweight - no dumpsys)
+    if [ "$GUARD_NEEDED" = "0" ] && is_video_call_active; then
+        GUARD_NEEDED=1
+        REASON="Video call active"
+    fi
+
+    if [ "$GUARD_NEEDED" = "0" ] && is_screen_recording; then
+        GUARD_NEEDED=1
+        REASON="Screen recording"
+    fi
+
+    # Per-app gaming guard
+    if [ "$GUARD_NEEDED" = "0" ] && [ -f /dev/.davion_batt_guard_app_active ]; then
+        GUARD_NEEDED=1
+        REASON="Per-app gaming guard"
+    fi
+
+    if [ "$GUARD_NEEDED" = "1" ]; then
+        if [ "$REASON" != "$_last_reason" ]; then
+            _last_reason="$REASON"
+        fi
+        _apply_guard_safe "$BATT" "$REASON"
+    else
+        _last_reason=""
+        [ "$CURRENT_STATE" = "1" ] && restore_normal "$BATT"
+    fi
+
+    sleep 15
+done

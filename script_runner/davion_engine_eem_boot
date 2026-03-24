@@ -1,0 +1,87 @@
+#!/system/bin/sh
+# DAVION ENGINE — EEM Voltage Offset + CPU/uclamp Boot Restore v2
+# Applies saved voltage offsets and CPU scheduler tunings from WebUI
+
+[ "$(id -u)" -ne 0 ] && { echo "Root required!"; exit 1; }
+
+LOG_FILE="/sdcard/GovThermal/GovThermal.log"
+APPLY_DIR="/sdcard/DAVION_ENGINE"
+CONFIG_FILE="$APPLY_DIR/eem_voltage_offset.txt"
+
+log_msg() {
+    echo "[$(date '+%H:%M:%S')] [EEM] $1" >> "$LOG_FILE"
+}
+
+# ── Apply EEM voltage offset ──────────────────────────────────
+if [ -f "$CONFIG_FILE" ]; then
+    OFFSET=$(tr -d '\r\n ' < "$CONFIG_FILE")
+    if [ -n "$OFFSET" ]; then
+        EEM_PATHS="
+/proc/eem/EEM_DET_B/eem_offset
+/proc/eem/EEM_DET_L/eem_offset
+/proc/eem/EEM_DET_CCI/eem_offset
+/proc/eem/EEM_DET_BL/eem_offset
+/proc/eemg/EEMG_DET_GPU/eemg_offset
+/proc/eemg/EEMG_DET_GPU_HI/eemg_offset
+"
+        applied=0
+        for path in $EEM_PATHS; do
+            if [ -f "$path" ]; then
+                echo "$OFFSET" > "$path" 2>/dev/null && applied=$((applied + 1))
+            fi
+        done
+        log_msg "EEM offset $OFFSET applied to $applied nodes"
+    fi
+fi
+
+log_msg "Applying saved CPU shares and uclamp settings..."
+
+# ── Apply CPU shares ──────────────────────────────────────────
+if [ -d "$APPLY_DIR" ]; then
+    for shares_file in "$APPLY_DIR"/cpu_*_share.txt; do
+        [ -f "$shares_file" ] || continue
+        cgroup_name=$(basename "$shares_file" | sed 's/cpu_\(.*\)_share\.txt/\1/')
+        cgroup_path="/dev/cpuctl/$cgroup_name/cpu.shares"
+        if [ -f "$cgroup_path" ]; then
+            shares_value=$(tr -d '\r\n ' < "$shares_file")
+            if [ -n "$shares_value" ] && \
+               [ "$shares_value" -ge 10 ] 2>/dev/null && \
+               [ "$shares_value" -le 16384 ] 2>/dev/null; then
+                echo "$shares_value" > "$cgroup_path" 2>/dev/null && \
+                    log_msg "CPU shares: $cgroup_name = $shares_value"
+            fi
+        fi
+    done
+
+    # ── Apply uclamp settings ──────────────────────────────────
+    for min_file in "$APPLY_DIR"/uclamp_*_min.txt; do
+        [ -f "$min_file" ] || continue
+        cgroup_name=$(basename "$min_file" | sed 's/uclamp_\(.*\)_min\.txt/\1/')
+        max_file="$APPLY_DIR/uclamp_${cgroup_name}_max.txt"
+        uclamp_min_path="/dev/cpuctl/$cgroup_name/cpu.uclamp.min"
+        uclamp_max_path="/dev/cpuctl/$cgroup_name/cpu.uclamp.max"
+
+        if [ -f "$uclamp_min_path" ]; then
+            min_val=$(tr -d '\r\n ' < "$min_file")
+            max_val=$([ -f "$max_file" ] && tr -d '\r\n ' < "$max_file" || echo "")
+
+            # Validate range 0-1024
+            if [ -n "$min_val" ] && [ "$min_val" -ge 0 ] 2>/dev/null && \
+               [ "$min_val" -le 1024 ] 2>/dev/null; then
+                echo "$min_val" > "$uclamp_min_path" 2>/dev/null && \
+                    log_msg "uclamp.min: $cgroup_name = $min_val"
+            fi
+
+            if [ -n "$max_val" ] && [ -f "$uclamp_max_path" ] && \
+               [ "$max_val" -ge 0 ] 2>/dev/null && \
+               [ "$max_val" -le 1024 ] 2>/dev/null; then
+                echo "$max_val" > "$uclamp_max_path" 2>/dev/null && \
+                    log_msg "uclamp.max: $cgroup_name = $max_val"
+            fi
+        fi
+    done
+else
+    log_msg "No saved settings found in $APPLY_DIR"
+fi
+
+log_msg "EEM boot tuning completed"

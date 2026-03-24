@@ -1,0 +1,120 @@
+#!/system/bin/sh
+# =============================================================================
+#  DAVION ENGINE ENGINE — CPU Governor Control Script
+#  AZenith-derived CPU governor & frequency management
+#
+#  Usage:
+#    cpu_governor_control performance   → Gaming / max perf
+#    cpu_governor_control balanced      → Daily use (auto-adapts with temp)
+#    cpu_governor_control powersave     → Battery saver
+#    cpu_governor_control status        → Print current governor state
+#    cpu_governor_control set_gov <gov> → Set a custom default governor
+#    cpu_governor_control set_perf_gov <gov>  → Set gaming governor override
+#    cpu_governor_control set_ps_gov <gov>    → Set powersave governor override
+# =============================================================================
+
+MODDIR="/data/adb/modules/GovThermal"
+AZ_ENGINE="$MODDIR/DAVION_ENGINE/AI_MODE/azenith_cpu_engine"
+LOG_FILE="/sdcard/DAVION_ENGINE/DAVION_ENGINE.log"
+
+if [ ! -x "$AZ_ENGINE" ]; then
+    echo "[ERROR] AZenith CPU Engine not found at: $AZ_ENGINE"
+    exit 1
+fi
+
+. "$AZ_ENGINE"
+
+case "$1" in
+    performance)
+        echo "[+] CPU Governor Control: switching to PERFORMANCE"
+        azenith_performance_cpu
+        ;;
+    balanced)
+        echo "[+] CPU Governor Control: switching to BALANCED"
+        azenith_balanced_cpu
+        ;;
+    powersave)
+        echo "[+] CPU Governor Control: switching to POWERSAVE"
+        azenith_powersave_cpu
+        ;;
+    init)
+        echo "[+] CPU Governor Control: initializing defaults"
+        azenith_init_cpu
+        ;;
+    status)
+        echo "=== DAVION ENGINE — CPU Governor Status ==="
+        echo "Default governor  : $(getprop persist.sys.mtkaieng.default_cpu_gov)"
+        echo "Custom default    : $(getprop persist.sys.mtkaieng.custom_default_cpu_gov)"
+        echo "Custom perf gov   : $(getprop persist.sys.mtkaieng.custom_perf_cpu_gov)"
+        echo "Custom PS gov     : $(getprop persist.sys.mtkaieng.custom_powersave_cpu_gov)"
+        echo "Default I/O sched : $(getprop persist.sys.mtkaieng.default_io)"
+        echo ""
+        echo "Active governors:"
+        for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+            echo "  $f: $(cat $f 2>/dev/null)"
+        done
+        echo ""
+        echo "CPU freq limits:"
+        for f in /sys/devices/system/cpu/cpufreq/policy*; do
+            pol=$(basename "$f")
+            max=$(cat "$f/scaling_max_freq" 2>/dev/null)
+            min=$(cat "$f/scaling_min_freq" 2>/dev/null)
+            hw_max=$(cat "$f/cpuinfo_max_freq" 2>/dev/null)
+            echo "  $pol: min=${min} max=${max} (hw_max=${hw_max})"
+        done
+        echo ""
+        echo "Freq scaling config: $(cat /sdcard/DAVION_ENGINE/cpu_freq_scaling.txt 2>/dev/null || echo 'not set (100%)')"
+        ;;
+    set_gov)
+        if [ -z "$2" ]; then
+            echo "Usage: $0 set_gov <governor>"
+            exit 1
+        fi
+        # Validate governor exists
+        if ! grep -q "$2" /sys/devices/system/cpu/cpufreq/policy0/scaling_available_governors 2>/dev/null; then
+            echo "[WARN] Governor '$2' may not be available on this device"
+        fi
+        setprop persist.sys.mtkaieng.custom_default_cpu_gov "$2"
+        echo "[+] Custom default governor set to: $2"
+        echo "[+] Applying now..."
+        azenith_balanced_cpu
+        ;;
+    set_perf_gov)
+        if [ -z "$2" ]; then
+            echo "Usage: $0 set_perf_gov <governor>"
+            exit 1
+        fi
+        setprop persist.sys.mtkaieng.custom_perf_cpu_gov "$2"
+        echo "[+] Custom performance governor set to: $2"
+        ;;
+    set_ps_gov)
+        if [ -z "$2" ]; then
+            echo "Usage: $0 set_ps_gov <governor>"
+            exit 1
+        fi
+        setprop persist.sys.mtkaieng.custom_powersave_cpu_gov "$2"
+        echo "[+] Custom powersave governor set to: $2"
+        ;;
+    list_govs)
+        echo "Available CPU governors:"
+        cat /sys/devices/system/cpu/cpufreq/policy0/scaling_available_governors 2>/dev/null | tr ' ' '\n' | sort
+        ;;
+    *)
+        echo "DAVION ENGINE — AZenith CPU Governor Control"
+        echo ""
+        echo "Usage: $0 <command> [args]"
+        echo ""
+        echo "Commands:"
+        echo "  performance         Apply gaming/max-performance CPU profile"
+        echo "  balanced            Apply daily-use balanced CPU profile"
+        echo "  powersave           Apply battery-saver CPU profile"
+        echo "  init                Detect and initialize CPU governor defaults"
+        echo "  status              Show current governor and frequency state"
+        echo "  set_gov <gov>       Set a custom default (balanced) governor"
+        echo "  set_perf_gov <gov>  Set gaming performance governor override"
+        echo "  set_ps_gov <gov>    Set powersave governor override"
+        echo "  list_govs           List available governors on this device"
+        ;;
+esac
+
+exit 0

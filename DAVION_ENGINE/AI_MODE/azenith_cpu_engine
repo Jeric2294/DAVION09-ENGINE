@@ -1,0 +1,600 @@
+#!/system/bin/sh
+# =============================================================================
+#  DAVION ENGINE — AZenith CPU Engine v2 (Bootloop-Safe)
+#  CK8N / Tecno Camon 20 Pro 5G / Android 14 compatible
+#  No set -e, no local in global scope, safe fallbacks everywhere
+# =============================================================================
+
+LOG_FILE="/sdcard/GovThermal/GovThermal.log"
+MODDIR="/data/adb/modules/GovThermal"
+
+az_log() {
+    echo "[$(date '+%m-%d %H:%M:%S')] [azenith] $1" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Safe write with chmod dance
+az_write() {
+    [ ! -e "$2" ] && return 0
+    chmod 644 "$2" 2>/dev/null
+    echo "$1" > "$2" 2>/dev/null
+    chmod 444 "$2" 2>/dev/null
+    return 0
+}
+
+# Safe write WITHOUT re-locking
+az_write_soft() {
+    [ ! -e "$2" ] && return 0
+    chmod 644 "$2" 2>/dev/null
+    echo "$1" > "$2" 2>/dev/null
+    return 0
+}
+
+# Find closest freq in available_frequencies to a target
+az_closest_freq() {
+    local file="$1" target="$2" chosen=""
+    if [ -f "$file" ]; then
+        chosen=$(tr -s ' ' '\n' < "$file" |
+            awk -v t="$target" '
+                {diff = (t - $1 >= 0 ? t - $1 : $1 - t)}
+                NR==1 || diff < mindiff {mindiff = diff; val=$1}
+                END {print val}')
+    fi
+    [ -z "$chosen" ] && chosen="$target"
+    echo "$chosen"
+}
+
+# Set governor on all CPUs/policies
+az_set_governor() {
+    local gov="$1"
+    chmod 644 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null
+    echo "$gov" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1
+    chmod 444 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null
+    chmod 444 /sys/devices/system/cpu/cpufreq/policy*/scaling_governor 2>/dev/null
+    az_log "Governor: $gov"
+}
+
+# Set I/O scheduler
+az_set_iosched() {
+    local sched="$1"
+    for block in sda sdb sdc mmcblk0 mmcblk1; do
+        [ -e "/sys/block/$block/queue/scheduler" ] || continue
+        chmod 644 "/sys/block/$block/queue/scheduler" 2>/dev/null
+        echo "$sched" > "/sys/block/$block/queue/scheduler" 2>/dev/null
+        chmod 444 "/sys/block/$block/queue/scheduler" 2>/dev/null
+    done
+    az_log "I/O scheduler: $sched"
+}
+
+# Apply freq via PPM
+az_apply_ppm_freq() {
+    local max_pct="${1:-100}" min_pct="${2:-0}"
+    [ ! -d /proc/ppm ] && return 1
+    local cluster=0
+    for path in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -f "$path/cpuinfo_max_freq" ] || continue
+        local cpu_max cpu_min new_max new_min avail
+        cpu_max=$(cat "$path/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        cpu_min=$(cat "$path/cpuinfo_min_freq" 2>/dev/null || echo 0)
+        avail="$path/scaling_available_frequencies"
+        local max_target min_target
+        max_target=$((cpu_max * max_pct / 100))
+        new_max=$(az_closest_freq "$avail" "$max_target")
+        if [ "$min_pct" -gt 0 ] 2>/dev/null; then
+            min_target=$((cpu_max * min_pct / 100))
+            new_min=$(az_closest_freq "$avail" "$min_target")
+        else
+            new_min="$cpu_min"
+        fi
+        az_write "$cluster $new_max" "/proc/ppm/policy/hard_userlimit_max_cpu_freq"
+        az_write "$cluster $new_min" "/proc/ppm/policy/hard_userlimit_min_cpu_freq"
+        cluster=$((cluster + 1))
+    done
+    az_log "PPM freq: max=${max_pct}% min=${min_pct}%"
+}
+
+# Apply freq via sysfs (fallback)
+az_apply_sysfs_freq() {
+    local max_pct="${1:-100}" min_pct="${2:-0}"
+    for path in /sys/devices/system/cpu/cpufreq/policy* /sys/devices/system/cpu/*/cpufreq; do
+        [ -f "$path/cpuinfo_max_freq" ] || continue
+        local cpu_max cpu_min avail new_max new_min
+        cpu_max=$(cat "$path/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        cpu_min=$(cat "$path/cpuinfo_min_freq" 2>/dev/null || echo 0)
+        avail="$path/scaling_available_frequencies"
+        local max_target
+        max_target=$((cpu_max * max_pct / 100))
+        new_max=$(az_closest_freq "$avail" "$max_target")
+        new_min="$cpu_min"
+        if [ "$min_pct" -gt 0 ] 2>/dev/null; then
+            local min_target
+            min_target=$((cpu_max * min_pct / 100))
+            new_min=$(az_closest_freq "$avail" "$min_target")
+        fi
+        chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
+        echo "$cpu_max"  > "$path/scaling_max_freq" 2>/dev/null
+        echo "$new_min"  > "$path/scaling_min_freq" 2>/dev/null
+        echo "$new_max"  > "$path/scaling_max_freq" 2>/dev/null
+    done
+    az_log "Sysfs freq: max=${max_pct}% min=${min_pct}%"
+}
+
+az_apply_freq() {
+    if [ -d /proc/ppm ]; then
+        az_apply_ppm_freq "$@"
+    else
+        az_apply_sysfs_freq "$@"
+    fi
+}
+
+# GPU performance (gpufreqv2 + Mali devfreq + GED)
+az_gpu_performance() {
+    if [ -f /proc/gpufreqv2/stack_signed_opp_table ]; then
+        local max_opp
+        max_opp=$(head -n1 /proc/gpufreqv2/stack_signed_opp_table 2>/dev/null | awk '{print $3}' | cut -d',' -f1)
+        [ -n "$max_opp" ] && az_write_soft "$max_opp" /sys/kernel/ged/hal/custom_upbound_gpu_freq
+        echo -1 > /proc/gpufreqv2/fix_target_opp_index 2>/dev/null
+    fi
+    for g in /sys/class/devfreq/*.mali*/governor /sys/class/devfreq/*gpu*/governor; do
+        [ -f "$g" ] || continue
+        local avail
+        avail=$(cat "$(dirname "$g")/available_governors" 2>/dev/null || echo "")
+        if echo "$avail" | grep -q "performance"; then
+            az_write_soft "performance" "$g"
+        elif echo "$avail" | grep -q "simple_ondemand"; then
+            az_write_soft "simple_ondemand" "$g"
+        fi
+    done
+    az_write 0 /sys/kernel/ged/hal/dcs_mode 2>/dev/null
+    az_log "GPU: performance"
+}
+
+az_gpu_balance() {
+    if [ -f /proc/gpufreqv2/fix_target_opp_index ]; then
+        echo -1 > /proc/gpufreqv2/fix_target_opp_index 2>/dev/null
+    fi
+    for g in /sys/class/devfreq/*.mali*/governor /sys/class/devfreq/*gpu*/governor; do
+        [ -f "$g" ] || continue
+        local avail
+        avail=$(cat "$(dirname "$g")/available_governors" 2>/dev/null || echo "")
+        if echo "$avail" | grep -q "simple_ondemand"; then
+            az_write_soft "simple_ondemand" "$g"
+        fi
+    done
+    az_write 1 /sys/kernel/ged/hal/dcs_mode 2>/dev/null
+    az_log "GPU: balance"
+}
+
+az_gpu_powersave() {
+    for g in /sys/class/devfreq/*.mali*/governor /sys/class/devfreq/*gpu*/governor; do
+        [ -f "$g" ] || continue
+        local avail
+        avail=$(cat "$(dirname "$g")/available_governors" 2>/dev/null || echo "")
+        if echo "$avail" | grep -q "powersave"; then
+            az_write_soft "powersave" "$g"
+        elif echo "$avail" | grep -q "simple_ondemand"; then
+            az_write_soft "simple_ondemand" "$g"
+        fi
+    done
+    az_log "GPU: powersave"
+}
+
+# FPSGO
+az_fpsgo_on() {
+    az_write 1 /sys/kernel/fpsgo/common/fpsgo_enable 2>/dev/null
+    az_write 1 /sys/kernel/fpsgo/fbt/enable_ceiling 2>/dev/null
+    az_write 1 /sys/module/mtk_fpsgo/parameters/perfmgr_enable 2>/dev/null
+    az_write 1 /sys/module/perfmgr_mtk/parameters/perfmgr_enable 2>/dev/null
+    az_log "FPSGO: on"
+}
+
+az_fpsgo_off() {
+    az_write 0 /sys/kernel/fpsgo/common/fpsgo_enable 2>/dev/null
+    az_log "FPSGO: off"
+}
+
+# MTK PPM
+az_mtk_ppm_performance() {
+    [ ! -d /proc/ppm ] && return 0
+    if [ -f /proc/ppm/policy_status ]; then
+        for idx in $(grep -E 'FORCE_LIMIT|PWR_THRO|THERMAL|USER_LIMIT' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+            az_write "$idx 0" "/proc/ppm/policy_status"
+        done
+        for dx in $(grep -E 'SYS_BOOST' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+            az_write "$dx 1" "/proc/ppm/policy_status"
+        done
+    fi
+    az_write "1" "/proc/cpufreq/cpufreq_cci_mode" 2>/dev/null
+    az_write "3" "/proc/cpufreq/cpufreq_power_mode" 2>/dev/null
+    az_log "PPM: performance"
+}
+
+az_mtk_ppm_balance() {
+    [ ! -d /proc/ppm ] && return 0
+    if [ -f /proc/ppm/policy_status ]; then
+        for idx in $(grep -E 'FORCE_LIMIT|PWR_THRO|THERMAL|USER_LIMIT' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+            az_write "$idx 1" "/proc/ppm/policy_status"
+        done
+        for dx in $(grep -E 'SYS_BOOST' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+            az_write "$dx 0" "/proc/ppm/policy_status"
+        done
+    fi
+    az_write "0" "/proc/cpufreq/cpufreq_cci_mode" 2>/dev/null
+    az_write "1" "/proc/cpufreq/cpufreq_power_mode" 2>/dev/null
+    az_log "PPM: balance"
+}
+
+az_mtk_ppm_powersave() {
+    [ ! -d /proc/ppm ] && return 0
+    if [ -f /proc/ppm/policy_status ]; then
+        for idx in $(grep -E 'FORCE_LIMIT|PWR_THRO|THERMAL|USER_LIMIT' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+            az_write "$idx 1" "/proc/ppm/policy_status"
+        done
+        for dx in $(grep -E 'SYS_BOOST' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+            az_write "$dx 0" "/proc/ppm/policy_status"
+        done
+    fi
+    az_log "PPM: powersave"
+}
+
+# Schedutil tuning (mode: performance|balance|powersave)
+az_tune_schedutil() {
+    local mode="${1:-balance}"
+    local up_rate down_rate
+    case "$mode" in
+        performance) up_rate=2000;  down_rate=5000  ;;
+        powersave)   up_rate=15000; down_rate=30000 ;;
+        *)           up_rate=7500;  down_rate=14000 ;;
+    esac
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -f "$policy/scaling_available_frequencies" ] || continue
+        local avail selected num up_delay i
+        avail=$(cat "$policy/scaling_available_frequencies" 2>/dev/null || echo "")
+        selected=$(echo "$avail" | tr ' ' '\n' | sort -rn | head -n 6 | tr '\n' ' ' | sed 's/ $//')
+        num=$(echo "$selected" | wc -w)
+        up_delay=""
+        i=1
+        while [ "$i" -le "$num" ]; do
+            up_delay="$up_delay $((50 * i))"
+            i=$((i + 1))
+        done
+        up_delay="${up_delay# }"
+        local hz_path="$policy/schedhorizon"
+        local su_path="$policy/schedutil"
+        if [ -d "$hz_path" ]; then
+            az_write "$up_delay"  "$hz_path/up_delay"
+            az_write "$selected"  "$hz_path/efficient_freq"
+            az_write "$up_rate"   "$hz_path/up_rate_limit_us"
+            az_write "$down_rate" "$hz_path/down_rate_limit_us"
+        fi
+        if [ -d "$su_path" ]; then
+            az_write "$up_rate"   "$su_path/up_rate_limit_us"
+            az_write "$down_rate" "$su_path/down_rate_limit_us"
+        fi
+    done
+    az_log "Schedutil: $mode"
+}
+
+# Schedtune
+az_schedtune_performance() {
+    for path in /dev/stune/*; do
+        az_write 30 "$path/schedtune.boost" 2>/dev/null
+        az_write  1 "$path/schedtune.sched_boost_enabled" 2>/dev/null
+        az_write  0 "$path/schedtune.prefer_idle" 2>/dev/null
+        az_write  0 "$path/schedtune.colocate" 2>/dev/null
+    done
+    az_write 50 "/dev/stune/top-app/schedtune.boost" 2>/dev/null
+    az_log "Schedtune: performance"
+}
+
+az_schedtune_balance() {
+    for path in /dev/stune/*; do
+        az_write 0 "$path/schedtune.boost" 2>/dev/null
+        az_write 0 "$path/schedtune.sched_boost_enabled" 2>/dev/null
+        az_write 0 "$path/schedtune.prefer_idle" 2>/dev/null
+        az_write 0 "$path/schedtune.colocate" 2>/dev/null
+    done
+    az_write 10 "/dev/stune/top-app/schedtune.boost" 2>/dev/null
+    az_log "Schedtune: balance"
+}
+
+# MTK DVFSRC (DDR/UFS governor)
+az_mtk_dvfsrc_performance() {
+    az_write_soft "performance" "/sys/class/devfreq/mtk-dvfsrc-devfreq/governor" 2>/dev/null
+    az_write_soft "performance" "/sys/devices/platform/soc/1c00f000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/governor" 2>/dev/null
+    az_write "0" "/sys/devices/platform/10012000.dvfsrc/helio-dvfsrc/dvfsrc_req_ddr_opp" 2>/dev/null
+    az_write "0" "/sys/kernel/helio-dvfsrc/dvfsrc_force_vcore_dvfs_opp" 2>/dev/null
+    az_log "DVFSRC: performance"
+}
+
+az_mtk_dvfsrc_balance() {
+    az_write_soft "userspace" "/sys/class/devfreq/mtk-dvfsrc-devfreq/governor" 2>/dev/null
+    az_write "-1" "/sys/devices/platform/10012000.dvfsrc/helio-dvfsrc/dvfsrc_req_ddr_opp" 2>/dev/null
+    az_write "-1" "/sys/kernel/helio-dvfsrc/dvfsrc_force_vcore_dvfs_opp" 2>/dev/null
+    az_log "DVFSRC: balance"
+}
+
+az_mtk_dvfsrc_powersave() {
+    az_write_soft "powersave" "/sys/class/devfreq/mtk-dvfsrc-devfreq/governor" 2>/dev/null
+    az_write "0" "/sys/devices/platform/10012000.dvfsrc/helio-dvfsrc/dvfsrc_req_ddr_opp" 2>/dev/null
+    az_write "0" "/sys/kernel/helio-dvfsrc/dvfsrc_force_vcore_dvfs_opp" 2>/dev/null
+    az_log "DVFSRC: powersave"
+}
+
+# Core control
+az_core_ctl_disable() {
+    for cpucore in /sys/devices/system/cpu/cpu*; do
+        az_write 0 "$cpucore/core_ctl/enable" 2>/dev/null
+        az_write 0 "$cpucore/core_ctl/core_ctl_boost" 2>/dev/null
+    done
+}
+
+# EAS
+az_eas_on()  { az_write "1" /sys/devices/system/cpu/eas/enable 2>/dev/null; }
+az_eas_off() { az_write "0" /sys/devices/system/cpu/eas/enable 2>/dev/null; }
+
+# Workqueue
+az_wq_performance() {
+    az_write "N" /sys/module/workqueue/parameters/power_efficient 2>/dev/null
+    az_write "N" /sys/module/workqueue/parameters/disable_numa 2>/dev/null
+}
+az_wq_balance() {
+    az_write "Y" /sys/module/workqueue/parameters/power_efficient 2>/dev/null
+    az_write "Y" /sys/module/workqueue/parameters/disable_numa 2>/dev/null
+}
+
+# Sched features
+az_sched_features_performance() {
+    if [ -f "/sys/kernel/debug/sched_features" ]; then
+        az_write "NEXT_BUDDY"     /sys/kernel/debug/sched_features 2>/dev/null
+        az_write "NO_TTWU_QUEUE" /sys/kernel/debug/sched_features 2>/dev/null
+    fi
+    echo 250000  > /proc/sys/kernel/sched_migration_cost_ns 2>/dev/null
+    echo 500000  > /proc/sys/kernel/sched_min_granularity_ns 2>/dev/null
+    echo 250000  > /proc/sys/kernel/sched_wakeup_granularity_ns 2>/dev/null
+}
+
+az_sched_features_balance() {
+    if [ -f "/sys/kernel/debug/sched_features" ]; then
+        az_write "NEXT_BUDDY" /sys/kernel/debug/sched_features 2>/dev/null
+        az_write "TTWU_QUEUE" /sys/kernel/debug/sched_features 2>/dev/null
+    fi
+    echo 500000  > /proc/sys/kernel/sched_migration_cost_ns 2>/dev/null
+    echo 1000000 > /proc/sys/kernel/sched_min_granularity_ns 2>/dev/null
+    echo 500000  > /proc/sys/kernel/sched_wakeup_granularity_ns 2>/dev/null
+}
+
+az_sched_features_powersave() {
+    if [ -f "/sys/kernel/debug/sched_features" ]; then
+        az_write "NO_NEXT_BUDDY" /sys/kernel/debug/sched_features 2>/dev/null
+        az_write "NO_TTWU_QUEUE" /sys/kernel/debug/sched_features 2>/dev/null
+    fi
+}
+
+# VM tuning — NOTE: swappiness min 10 to avoid OOM thrash
+az_vm_performance() {
+    echo 40  > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+    echo 20  > /proc/sys/vm/dirty_ratio 2>/dev/null
+    echo 8   > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo 10  > /proc/sys/vm/swappiness 2>/dev/null   # never 0 — causes OOM on Android
+    echo 200 > /proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+}
+
+az_vm_balance() {
+    echo 100  > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+    echo 20   > /proc/sys/vm/dirty_ratio 2>/dev/null
+    echo 10   > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo 60   > /proc/sys/vm/swappiness 2>/dev/null
+    echo 3000 > /proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+}
+
+az_vm_powersave() {
+    echo 120  > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+    echo 30   > /proc/sys/vm/dirty_ratio 2>/dev/null
+    echo 15   > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo 100  > /proc/sys/vm/swappiness 2>/dev/null
+    echo 1500 > /proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+}
+
+# Battery saver module
+az_battery_saver_enable() {
+    if [ -f /sys/module/battery_saver/parameters/enabled ]; then
+        if grep -qo '[0-9]\+' /sys/module/battery_saver/parameters/enabled 2>/dev/null; then
+            az_write 1 /sys/module/battery_saver/parameters/enabled
+        else
+            az_write Y /sys/module/battery_saver/parameters/enabled
+        fi
+    fi
+}
+
+az_battery_saver_disable() {
+    if [ -f /sys/module/battery_saver/parameters/enabled ]; then
+        if grep -qo '[0-9]\+' /sys/module/battery_saver/parameters/enabled 2>/dev/null; then
+            az_write 0 /sys/module/battery_saver/parameters/enabled
+        else
+            az_write N /sys/module/battery_saver/parameters/enabled
+        fi
+    fi
+}
+
+# ===========================================================================
+# INIT
+# ===========================================================================
+azenith_init_cpu() {
+    az_log "CPU init start"
+    echo 500000  > /proc/sys/kernel/sched_migration_cost_ns 2>/dev/null
+    echo 1000000 > /proc/sys/kernel/sched_min_granularity_ns 2>/dev/null
+    echo 500000  > /proc/sys/kernel/sched_wakeup_granularity_ns 2>/dev/null
+    echo 255     > /proc/sys/kernel/sched_lib_mask_force 2>/dev/null
+
+    local CPU="/sys/devices/system/cpu/cpu0/cpufreq"
+    chmod 644 "$CPU/scaling_governor" 2>/dev/null
+    local default_gov
+    default_gov=$(cat "$CPU/scaling_governor" 2>/dev/null || echo "schedutil")
+    setprop persist.sys.mtkaieng.default_cpu_gov "$default_gov" 2>/dev/null
+    az_log "Default governor: $default_gov"
+
+    if [ "$default_gov" = "performance" ] && [ -z "$(getprop persist.sys.mtkaieng.custom_default_cpu_gov 2>/dev/null)" ]; then
+        for gov in sugov_ext schedhorizon schedutil_plus uag schedplus ondemand schedutil interactive; do
+            if grep -q "$gov" "$CPU/scaling_available_governors" 2>/dev/null; then
+                setprop persist.sys.mtkaieng.default_cpu_gov "$gov" 2>/dev/null
+                default_gov="$gov"
+                az_log "Fallback governor: $gov"
+                break
+            fi
+        done
+    fi
+
+    chmod 644 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null
+    echo "$default_gov" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1
+    chmod 444 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null
+
+    local IO_DEV=""
+    for blk in sda mmcblk0; do
+        [ -f "/sys/block/$blk/queue/scheduler" ] && IO_DEV="$blk" && break
+    done
+    if [ -n "$IO_DEV" ]; then
+        local default_io
+        default_io=$(grep -o '\[.*\]' "/sys/block/$IO_DEV/queue/scheduler" 2>/dev/null | tr -d '[]')
+        setprop persist.sys.mtkaieng.default_io "$default_io" 2>/dev/null
+        az_log "Default I/O: $default_io"
+    fi
+
+    az_tune_schedutil balance
+    az_vm_balance
+    az_log "CPU init done"
+}
+
+# ===========================================================================
+# PERFORMANCE PROFILE
+# ===========================================================================
+azenith_performance_cpu() {
+    az_log "Profile: PERFORMANCE"
+
+    local gov
+    gov=$(getprop persist.sys.mtkaieng.custom_perf_cpu_gov 2>/dev/null)
+    [ -z "$gov" ] && gov="performance"
+    az_set_governor "$gov"
+
+    local io
+    io=$(getprop persist.sys.mtkaieng.custom_perf_io 2>/dev/null)
+    [ -z "$io" ] && io=$(getprop persist.sys.mtkaieng.default_io 2>/dev/null)
+    [ -n "$io" ] && az_set_iosched "$io"
+
+    local limiter
+    limiter=$(tr -d '\r\n ' < "/sdcard/GovThermal/freq_scale.txt" 2>/dev/null)
+    if [ -n "$limiter" ] && [ "$limiter" -ge 30 ] 2>/dev/null && [ "$limiter" -le 100 ] 2>/dev/null; then
+        az_apply_freq "$limiter" 0
+    else
+        az_apply_freq 100 0
+    fi
+
+    az_mtk_ppm_performance
+    az_mtk_dvfsrc_performance
+    az_gpu_performance
+    az_fpsgo_on
+    az_eas_off
+    az_core_ctl_disable
+    az_wq_performance
+    az_vm_performance
+    az_sched_features_performance
+    az_tune_schedutil performance
+    az_schedtune_performance
+    az_battery_saver_disable
+
+    az_write 1 /proc/sys/kernel/sched_energy_aware 2>/dev/null
+    az_write 0 /proc/sys/kernel/split_lock_mitigate 2>/dev/null
+
+    az_log "PERFORMANCE applied"
+}
+
+# ===========================================================================
+# BALANCED PROFILE
+# ===========================================================================
+azenith_balanced_cpu() {
+    az_log "Profile: BALANCED"
+
+    local gov
+    gov=$(getprop persist.sys.mtkaieng.custom_default_cpu_gov 2>/dev/null)
+    [ -z "$gov" ] && gov=$(getprop persist.sys.mtkaieng.default_cpu_gov 2>/dev/null)
+    [ -z "$gov" ] && gov="schedutil"
+    az_set_governor "$gov"
+
+    local io
+    io=$(getprop persist.sys.mtkaieng.custom_balanced_io 2>/dev/null)
+    [ -z "$io" ] && io=$(getprop persist.sys.mtkaieng.default_io 2>/dev/null)
+    [ -n "$io" ] && az_set_iosched "$io"
+
+    local limiter
+    limiter=$(tr -d '\r\n ' < "/sdcard/GovThermal/freq_scale.txt" 2>/dev/null)
+    if [ -n "$limiter" ] && [ "$limiter" -ge 30 ] 2>/dev/null && [ "$limiter" -le 100 ] 2>/dev/null; then
+        az_apply_freq "$limiter" 0
+    else
+        az_apply_freq 100 0
+    fi
+
+    az_mtk_ppm_balance
+    az_mtk_dvfsrc_balance
+    az_gpu_balance
+    az_eas_on
+    az_wq_balance
+    az_vm_balance
+    az_sched_features_balance
+    az_tune_schedutil balance
+    az_schedtune_balance
+    az_battery_saver_disable
+
+    az_write 1 /proc/sys/kernel/sched_energy_aware 2>/dev/null
+    az_write 1 /proc/sys/kernel/split_lock_mitigate 2>/dev/null
+
+    az_log "BALANCED applied"
+}
+
+# ===========================================================================
+# POWERSAVE PROFILE
+# ===========================================================================
+azenith_powersave_cpu() {
+    az_log "Profile: POWERSAVE"
+
+    local gov
+    gov=$(getprop persist.sys.mtkaieng.custom_powersave_cpu_gov 2>/dev/null)
+    [ -z "$gov" ] && gov="powersave"
+    az_set_governor "$gov"
+
+    local io
+    io=$(getprop persist.sys.mtkaieng.custom_powersave_io 2>/dev/null)
+    [ -z "$io" ] && io=$(getprop persist.sys.mtkaieng.default_io 2>/dev/null)
+    [ -n "$io" ] && az_set_iosched "$io"
+
+    local limiter
+    limiter=$(tr -d '\r\n ' < "/sdcard/GovThermal/freq_scale.txt" 2>/dev/null)
+    if [ -n "$limiter" ] && [ "$limiter" -ge 30 ] 2>/dev/null && [ "$limiter" -le 100 ] 2>/dev/null; then
+        az_apply_freq "$limiter" 0
+    else
+        az_apply_freq 60 0
+    fi
+
+    az_mtk_ppm_powersave
+    az_mtk_dvfsrc_powersave
+    az_gpu_powersave
+    az_fpsgo_off
+    az_wq_balance
+    az_vm_powersave
+    az_sched_features_powersave
+    az_tune_schedutil powersave
+    az_battery_saver_enable
+
+    az_write 0 /proc/sys/kernel/sched_energy_aware 2>/dev/null
+
+    az_log "POWERSAVE applied"
+}
+
+# ===========================================================================
+# ENTRY POINT
+# ===========================================================================
+case "$1" in
+    init)         azenith_init_cpu        ;;
+    performance)  azenith_performance_cpu ;;
+    balanced)     azenith_balanced_cpu    ;;
+    powersave)    azenith_powersave_cpu   ;;
+    *)            [ -n "$1" ] || azenith_init_cpu ;;
+esac
