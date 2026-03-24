@@ -1,0 +1,78 @@
+#!/system/bin/sh
+### ==== FLOOD GUARD BEGIN ==== ###
+SCRIPT_NAME="$(basename "$0")"
+STATE_DIR="/data/adb/modules/GovThermal/.guard"
+mkdir -p "$STATE_DIR"
+RUN_TS_FILE="$STATE_DIR/${SCRIPT_NAME}.last"
+COUNT_FILE="$STATE_DIR/${SCRIPT_NAME}.count"
+NOW=$(date +%s)
+LAST=$(cat "$RUN_TS_FILE" 2>/dev/null || echo 0)
+COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+MIN_INTERVAL=5; MAX_RUNS=5; WINDOW=60
+LOG="/sdcard/DAVION_ENGINE/flood_guard.log"
+MAX_SIZE=10240
+[ $((NOW - LAST)) -lt $MIN_INTERVAL ] && exit 0
+if [ $((NOW - LAST)) -lt $WINDOW ]; then COUNT=$((COUNT + 1)); else COUNT=1; fi
+if [ "$COUNT" -gt "$MAX_RUNS" ]; then
+  echo "[FLOOD-GUARD] $SCRIPT_NAME blocked" >> "$LOG"
+  exit 0
+fi
+echo "$NOW" > "$RUN_TS_FILE"
+echo "$COUNT" > "$COUNT_FILE"
+### ==== FLOOD GUARD END ==== ###
+
+MOD_DIR="/data/adb/modules/GovThermal"
+EXTERNAL_CFG="/sdcard/DAVION_ENGINE"
+TRIMMING_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/global_mode/trim_memory"
+RAM_CLEANER_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/global_mode/ram_cleaner"
+LOGIC_CPU7_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/auto_frequency/cpu7"
+LOGIC_CPU6_PATH="$MOD_DIR/DAVION_ENGINE/AI_MODE/auto_frequency/cpu6"
+
+# Ensure permissions once
+chmod +x "$TRIMMING_PATH" "$RAM_CLEANER_PATH" "$LOGIC_CPU6_PATH" "$LOGIC_CPU7_PATH" 2>/dev/null
+
+# Helper: start daemon only if not already running, using a pid file
+start_daemon() {
+    local name="$1" script="$2" pid_file="$STATE_DIR/${name}.pid"
+    local old_pid; old_pid=$(cat "$pid_file" 2>/dev/null)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        return 0  # already running
+    fi
+    nohup "$script" >/dev/null 2>&1 &
+    echo $! > "$pid_file"
+}
+
+stop_daemon() {
+    local name="$1" pattern="$2" pid_file="$STATE_DIR/${name}.pid"
+    local pid; pid=$(cat "$pid_file" 2>/dev/null)
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+    rm -f "$pid_file"
+    pkill -f "$pattern" 2>/dev/null
+}
+
+while true; do
+    # Trim Memory daemon
+    if [ -f "$EXTERNAL_CFG/enable_trim" ]; then
+        start_daemon "trim_memory" "$TRIMMING_PATH"
+    else
+        stop_daemon "trim_memory" "trim_memory"
+    fi
+
+    # RAM Cleaner daemon
+    if [ -f "$EXTERNAL_CFG/enable_cleaner" ]; then
+        start_daemon "ram_cleaner" "$RAM_CLEANER_PATH"
+    else
+        stop_daemon "ram_cleaner" "ram_cleaner"
+    fi
+
+    # CPU6 / CPU7 frequency logic
+    if [ -f "$EXTERNAL_CFG/enable_cpu" ]; then
+        start_daemon "cpu6" "$LOGIC_CPU6_PATH"
+        start_daemon "cpu7" "$LOGIC_CPU7_PATH"
+    else
+        stop_daemon "cpu6" "cpu6"
+        stop_daemon "cpu7" "cpu7"
+    fi
+
+    sleep 60
+done

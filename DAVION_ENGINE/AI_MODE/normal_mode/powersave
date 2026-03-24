@@ -1,0 +1,59 @@
+#!/system/bin/sh
+
+MODDIR="/data/adb/modules/GovThermal"
+AZ_ENGINE="$MODDIR/DAVION_ENGINE/AI_MODE/azenith_cpu_engine"
+
+log_msg() { echo "[$(date '+%H:%M:%S')] [powersave] $1" >> /sdcard/DAVION_ENGINE/DAVION_ENGINE.log; }
+
+# ── AZenith CPU: powersave profile ──────────────────────────
+if [ -x "$AZ_ENGINE" ]; then
+    . "$AZ_ENGINE"
+    azenith_powersave_cpu
+    log_msg "AZenith CPU: powersave profile applied"
+else
+    # Legacy fallback
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        echo "powersave" > "$policy/scaling_governor" 2>/dev/null
+    done
+    log_msg "Legacy: powersave governor set"
+fi
+
+# ── Android power settings ───────────────────────────────────
+settings put global low_power 1
+settings put global low_power_sticky 1
+settings put global app_auto_restriction_enabled 1
+settings put global forced_app_standby_enabled 1
+settings put global app_standby_enabled 1
+settings put global forced_app_standby_for_small_battery_enabled 1
+
+# ── Disable MIUI AI Preload (if present) ────────────────────
+if settings get system ai_preload_user_state 2>/dev/null | grep -q "^[0-9]"; then
+    settings put system ai_preload_user_state 0
+fi
+
+# ── Trigger Doze ────────────────────────────────────────────
+dumpsys deviceidle enable 2>/dev/null
+dumpsys deviceidle force-idle 2>/dev/null
+
+# ── Stop non-critical vendor services ───────────────────────
+for svc in woodpeckerd atfwd perfd cnss_diag subsystem_ramdump tcpdump; do
+    stop "$svc" 2>/dev/null
+    killall -9 "$svc" 2>/dev/null
+done
+
+# ── DEVFREQ: force powersave on all nodes ───────────────────
+for g in /sys/class/devfreq/*/governor; do
+    [ -f "$g" ] || continue
+    NAME=$(basename "$(dirname "$g")")
+    SUP=$(cat "$(dirname "$g")/available_governors" 2>/dev/null)
+    chmod 644 "$g" 2>/dev/null
+    if echo "$SUP" | grep -q "powersave"; then
+        echo powersave > "$g" 2>/dev/null
+        log_msg "devfreq $NAME → powersave"
+    else
+        echo simple_ondemand > "$g" 2>/dev/null
+        log_msg "devfreq $NAME → simple_ondemand (fallback)"
+    fi
+done
+
+log_msg "Powersave mode fully applied"

@@ -1,0 +1,43 @@
+#!/sbin/sh
+##########################################################################################
+#
+# Magisk Module Installer Script
+#
+##########################################################################################
+
+SKIPUNZIP=1
+
+# Extract verify.sh
+unzip -o "$ZIPFILE" 'verify.sh' -d "$TMPDIR" >/dev/null 2>&1 && . "$TMPDIR/verify.sh" 2>/dev/null
+
+if [ ! -f "$TMPDIR/verify.sh" ]; then
+  ui_print "*******************************"
+  ui_print " Keystore not found, skipping  "
+  ui_print " signature verification        "
+  ui_print "*******************************"
+fi
+
+# Extract the module files
+ui_print "- Extracting module files"
+unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >/dev/null 2>&1
+
+# Set permissions
+ui_print "- Setting permissions"
+set_perm_recursive "$MODPATH" root root 0755 0644
+set_perm "$MODPATH/service.sh"       root root 0755
+set_perm "$MODPATH/post-fs-data.sh"  root root 0755
+set_perm "$MODPATH/customize.sh"     root root 0755
+set_perm "$MODPATH/busybox"          root root 0755
+
+for f in "$MODPATH/logcat_detection/logcat" \
+         "$MODPATH/logcat_detection/dumpsys2" \
+         "$MODPATH/DAVION_ENGINE/AI_MODE/azenith_cpu_engine" \
+         "$MODPATH/DAVION_ENGINE/AI_MODE/cpu_governor_control"; do
+  [ -f "$f" ] && set_perm "$f" root root 0755
+done
+
+find "$MODPATH/script_runner" -type f 2>/dev/null | while read f; do set_perm "$f" root root 0755; done
+find "$MODPATH/service.d"     -type f 2>/dev/null | while read f; do set_perm "$f" root root 0755; done
+find "$MODPATH/DAVION_ENGINE/AI_MODE" -type f 2>/dev/null | while read f; do set_perm "$f" root root 0755; done
+
+ui_print "- Installation complete"

@@ -1,0 +1,95 @@
+#!/system/bin/sh
+# DAVION ENGINE ENGINE - Unified CPU Frequency Scaling with AZenith Engine
+# Temperature-based continuous monitoring: -5% per 1°C above 38°C baseline
+
+CONFIG_FILE="/sdcard/DAVION_ENGINE/cpu_freq_scaling.txt"
+LOG_FILE="/sdcard/DAVION_ENGINE/DAVION_ENGINE.log"
+CPU_SYS="/sys/devices/system/cpu"
+PID_FILE="/data/adb/modules/GovThermal/cpu_scaling.pid"
+MODDIR="/data/adb/modules/GovThermal"
+AZ_ENGINE="$MODDIR/DAVION_ENGINE/AI_MODE/azenith_cpu_engine"
+
+# Cleanup old process if exists
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE")
+    kill -9 "$OLD_PID" 2>/dev/null
+    rm -f "$PID_FILE"
+fi
+echo $$ > "$PID_FILE"
+
+log_msg() {
+    echo "[$(date '+%m-%d %H:%M:%S')] [cpu_scaling] $1" >> "$LOG_FILE"
+}
+
+# Wait for system to be ready
+for i in $(seq 1 30); do
+    if [ -d "$CPU_SYS/cpu0" ]; then
+        log_msg "CPU sysfs ready after $i seconds"
+        break
+    fi
+    sleep 1
+done
+
+# Source AZenith engine once for the entire loop lifecycle
+if [ -x "$AZ_ENGINE" ]; then
+    . "$AZ_ENGINE"
+    azenith_init_cpu
+    log_msg "AZenith CPU Engine loaded into auto_frequency loop"
+    AZ_AVAILABLE=1
+else
+    AZ_AVAILABLE=0
+    log_msg "AZenith engine not found — using legacy sysfs scaling"
+fi
+
+# Continuous monitoring loop
+while true; do
+    # Get current battery temperature
+    if [ -f "/sys/class/power_supply/battery/temp" ]; then
+        TEMP_RAW=$(cat "/sys/class/power_supply/battery/temp")
+        TEMP_INT=$((TEMP_RAW / 10))
+    else
+        TEMP_INT=38
+    fi
+
+    # Load user setting (default: 100%)
+    USER_PERCENT=100
+    if [ -f "$CONFIG_FILE" ]; then
+        VAL=$(cat "$CONFIG_FILE" | tr -d '\r\n ')
+        if [ "$VAL" -ge 30 ] 2>/dev/null && [ "$VAL" -le 100 ] 2>/dev/null; then
+            USER_PERCENT=$VAL
+        fi
+    fi
+
+    # Temperature-based scaling: -5% per °C above 38°C
+    BASE_TEMP=38
+    TEMP_DIFF=$((TEMP_INT - BASE_TEMP))
+    if [ "$TEMP_DIFF" -gt 0 ]; then
+        REDUCTION=$((TEMP_DIFF * 5))
+        CURRENT_PERCENT=$((USER_PERCENT - REDUCTION))
+        [ "$CURRENT_PERCENT" -lt 30 ] && CURRENT_PERCENT=30
+    else
+        CURRENT_PERCENT=$USER_PERCENT
+    fi
+
+    # Apply via AZenith if available, else legacy sysfs
+    if [ "$AZ_AVAILABLE" = "1" ]; then
+        # Write the computed percent to the config so azenith_balanced_cpu picks it up
+        echo "$CURRENT_PERCENT" > "$CONFIG_FILE"
+        azenith_balanced_cpu
+    else
+        # Legacy: direct sysfs write
+        for cpu in $CPU_SYS/cpu[0-9]*; do
+            [ -d "$cpu" ] || continue
+            if [ -f "$cpu/cpufreq/cpuinfo_max_freq" ]; then
+                MAX_FREQ=$(cat "$cpu/cpufreq/cpuinfo_max_freq")
+                MIN_FREQ=$(cat "$cpu/cpufreq/cpuinfo_min_freq")
+                TARGET_FREQ=$((MAX_FREQ * CURRENT_PERCENT / 100))
+                echo "$MIN_FREQ" > "$cpu/cpufreq/scaling_min_freq" 2>/dev/null
+                echo "$TARGET_FREQ" > "$cpu/cpufreq/scaling_max_freq" 2>/dev/null
+            fi
+        done
+    fi
+
+    log_msg "Applied ${CURRENT_PERCENT}% @ ${TEMP_INT}°C (user_limit=${USER_PERCENT}%)"
+    sleep 60
+done

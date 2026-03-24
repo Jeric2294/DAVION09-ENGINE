@@ -1,0 +1,619 @@
+#!/system/bin/sh
+# =============================================================================
+#  DAVION ENGINE — CPU Engine v1 (DE_CPU)
+#  Replaces AZenith. Per-profile governor config stored in files, not props.
+#  Governors: /sdcard/GovThermal/config/gov_<profile>
+#  Active profile: /sdcard/GovThermal/config/active_profile
+# =============================================================================
+
+LOG_FILE="/sdcard/GovThermal/GovThermal.log"
+DE_CFG="/sdcard/GovThermal/config"
+
+de_log() {
+    echo "[$(date '+%m-%d %H:%M:%S')] [DE-CPU] $1" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Safe write — no chmod 444 locking, just plain write with 644 unlock
+de_write() {
+    [ ! -e "$2" ] && return 0
+    chmod 644 "$2" 2>/dev/null
+    echo "$1" > "$2" 2>/dev/null
+    return 0
+}
+
+# Read governor for a profile from file
+# Falls back in order: gov file → per-profile default
+de_read_gov() {
+    local profile="$1"
+    local gov_file="${DE_CFG}/gov_${profile}"
+    local gov=""
+    if [ -f "$gov_file" ]; then
+        gov=$(tr -d '[:space:]' < "$gov_file" 2>/dev/null)
+    fi
+    if [ -z "$gov" ]; then
+        case "$profile" in
+            performance) gov="performance" ;;
+            powersave)   gov="powersave"   ;;
+            *)           gov="schedutil"   ;;
+        esac
+        # Try to find a better fallback on this device
+        local avail_path="/sys/devices/system/cpu/cpufreq/policy0/scaling_available_governors"
+        if [ -f "$avail_path" ]; then
+            local avail
+            avail=$(cat "$avail_path" 2>/dev/null)
+            case "$profile" in
+                balanced)
+                    for g in sugov_ext schedhorizon schedutil_plus uag schedplus schedutil ondemand interactive; do
+                        if echo "$avail" | grep -qw "$g"; then gov="$g"; break; fi
+                    done
+                    ;;
+                performance)
+                    for g in performance schedhorizon schedutil_plus uag schedplus; do
+                        if echo "$avail" | grep -qw "$g"; then gov="$g"; break; fi
+                    done
+                    ;;
+                powersave)
+                    for g in powersave conservative ondemand schedutil; do
+                        if echo "$avail" | grep -qw "$g"; then gov="$g"; break; fi
+                    done
+                    ;;
+            esac
+        fi
+    fi
+    echo "$gov"
+}
+
+# Find closest freq in available_frequencies to a target
+de_closest_freq() {
+    local file="$1" target="$2" chosen=""
+    if [ -f "$file" ]; then
+        chosen=$(tr -s ' ' '\n' < "$file" |
+            awk -v t="$target" '
+                {diff = (t - $1 >= 0 ? t - $1 : $1 - t)}
+                NR==1 || diff < mindiff {mindiff = diff; val=$1}
+                END {print val}')
+    fi
+    [ -z "$chosen" ] && chosen="$target"
+    echo "$chosen"
+}
+
+# Set governor on all CPUs — NO chmod 444 locking
+de_set_governor() {
+    local gov="$1"
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -f "$policy/scaling_governor" ] || continue
+        chmod 644 "$policy/scaling_governor" 2>/dev/null
+        echo "$gov" > "$policy/scaling_governor" 2>/dev/null
+    done
+    # Also cover per-cpu paths
+    chmod 644 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null
+    echo "$gov" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1
+    de_log "Governor: $gov"
+}
+
+# Set I/O scheduler
+de_set_iosched() {
+    local sched="$1"
+    for block in sda sdb sdc mmcblk0 mmcblk1; do
+        [ -e "/sys/block/$block/queue/scheduler" ] || continue
+        chmod 644 "/sys/block/$block/queue/scheduler" 2>/dev/null
+        echo "$sched" > "/sys/block/$block/queue/scheduler" 2>/dev/null
+    done
+    de_log "I/O: $sched"
+}
+
+# Apply freq via PPM (MTK)
+de_apply_ppm_freq() {
+    local max_pct="${1:-100}" min_pct="${2:-0}"
+    [ ! -d /proc/ppm ] && return 1
+    local cluster=0
+    for path in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -f "$path/cpuinfo_max_freq" ] || continue
+        local cpu_max cpu_min new_max new_min avail max_target min_target
+        cpu_max=$(cat "$path/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        cpu_min=$(cat "$path/cpuinfo_min_freq" 2>/dev/null || echo 0)
+        avail="$path/scaling_available_frequencies"
+        max_target=$((cpu_max * max_pct / 100))
+        new_max=$(de_closest_freq "$avail" "$max_target")
+        if [ "$min_pct" -gt 0 ] 2>/dev/null; then
+            min_target=$((cpu_max * min_pct / 100))
+            new_min=$(de_closest_freq "$avail" "$min_target")
+        else
+            new_min="$cpu_min"
+        fi
+        de_write "$cluster $new_max" "/proc/ppm/policy/hard_userlimit_max_cpu_freq"
+        de_write "$cluster $new_min" "/proc/ppm/policy/hard_userlimit_min_cpu_freq"
+        cluster=$((cluster + 1))
+    done
+    de_log "PPM freq: max=${max_pct}% min=${min_pct}%"
+}
+
+# Apply freq via sysfs (non-MTK fallback)
+de_apply_sysfs_freq() {
+    local max_pct="${1:-100}" min_pct="${2:-0}"
+    for path in /sys/devices/system/cpu/cpufreq/policy* /sys/devices/system/cpu/*/cpufreq; do
+        [ -f "$path/cpuinfo_max_freq" ] || continue
+        local cpu_max cpu_min avail new_max new_min max_target
+        cpu_max=$(cat "$path/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        cpu_min=$(cat "$path/cpuinfo_min_freq" 2>/dev/null || echo 0)
+        avail="$path/scaling_available_frequencies"
+        max_target=$((cpu_max * max_pct / 100))
+        new_max=$(de_closest_freq "$avail" "$max_target")
+        new_min="$cpu_min"
+        if [ "$min_pct" -gt 0 ] 2>/dev/null; then
+            min_target=$((cpu_max * min_pct / 100))
+            new_min=$(de_closest_freq "$avail" "$min_target")
+        fi
+        chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
+        echo "$cpu_max" > "$path/scaling_max_freq" 2>/dev/null
+        echo "$new_min" > "$path/scaling_min_freq" 2>/dev/null
+        echo "$new_max" > "$path/scaling_max_freq" 2>/dev/null
+    done
+    de_log "Sysfs freq: max=${max_pct}% min=${min_pct}%"
+}
+
+de_apply_freq() {
+    if [ -d /proc/ppm ]; then
+        de_apply_ppm_freq "$@"
+    else
+        de_apply_sysfs_freq "$@"
+    fi
+}
+
+# GPU
+de_gpu_performance() {
+    if [ -f /proc/gpufreqv2/stack_signed_opp_table ]; then
+        local max_opp
+        max_opp=$(head -n1 /proc/gpufreqv2/stack_signed_opp_table 2>/dev/null | awk '{print $3}' | cut -d',' -f1)
+        [ -n "$max_opp" ] && { chmod 644 /sys/kernel/ged/hal/custom_upbound_gpu_freq 2>/dev/null; echo "$max_opp" > /sys/kernel/ged/hal/custom_upbound_gpu_freq 2>/dev/null; }
+        echo -1 > /proc/gpufreqv2/fix_target_opp_index 2>/dev/null
+    fi
+    for g in /sys/class/devfreq/*.mali*/governor /sys/class/devfreq/*gpu*/governor; do
+        [ -f "$g" ] || continue
+        local avail; avail=$(cat "$(dirname "$g")/available_governors" 2>/dev/null)
+        if echo "$avail" | grep -qw "performance"; then
+            chmod 644 "$g" 2>/dev/null; echo "performance" > "$g" 2>/dev/null
+        elif echo "$avail" | grep -qw "simple_ondemand"; then
+            chmod 644 "$g" 2>/dev/null; echo "simple_ondemand" > "$g" 2>/dev/null
+        fi
+    done
+    de_write 0 /sys/kernel/ged/hal/dcs_mode 2>/dev/null
+    de_log "GPU: performance"
+}
+
+de_gpu_balance() {
+    [ -f /proc/gpufreqv2/fix_target_opp_index ] && echo -1 > /proc/gpufreqv2/fix_target_opp_index 2>/dev/null
+    for g in /sys/class/devfreq/*.mali*/governor /sys/class/devfreq/*gpu*/governor; do
+        [ -f "$g" ] || continue
+        local avail; avail=$(cat "$(dirname "$g")/available_governors" 2>/dev/null)
+        echo "$avail" | grep -qw "simple_ondemand" && { chmod 644 "$g" 2>/dev/null; echo "simple_ondemand" > "$g" 2>/dev/null; }
+    done
+    de_write 1 /sys/kernel/ged/hal/dcs_mode 2>/dev/null
+    de_log "GPU: balance"
+}
+
+de_gpu_powersave() {
+    for g in /sys/class/devfreq/*.mali*/governor /sys/class/devfreq/*gpu*/governor; do
+        [ -f "$g" ] || continue
+        local avail; avail=$(cat "$(dirname "$g")/available_governors" 2>/dev/null)
+        if echo "$avail" | grep -qw "powersave"; then
+            chmod 644 "$g" 2>/dev/null; echo "powersave" > "$g" 2>/dev/null
+        elif echo "$avail" | grep -qw "simple_ondemand"; then
+            chmod 644 "$g" 2>/dev/null; echo "simple_ondemand" > "$g" 2>/dev/null
+        fi
+    done
+    de_log "GPU: powersave"
+}
+
+# FPSGO
+de_fpsgo_on()  {
+    de_write 1 /sys/kernel/fpsgo/common/fpsgo_enable
+    de_write 1 /sys/kernel/fpsgo/fbt/enable_ceiling
+    de_write 1 /sys/module/mtk_fpsgo/parameters/perfmgr_enable
+    de_write 1 /sys/module/perfmgr_mtk/parameters/perfmgr_enable
+    de_log "FPSGO: on"
+}
+de_fpsgo_off() {
+    de_write 0 /sys/kernel/fpsgo/common/fpsgo_enable
+    de_log "FPSGO: off"
+}
+
+# MTK PPM
+de_ppm_performance() {
+    [ ! -d /proc/ppm ] && return 0
+    [ -f /proc/ppm/policy_status ] || return 0
+    for idx in $(grep -E 'FORCE_LIMIT|PWR_THRO|THERMAL|USER_LIMIT' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+        de_write "$idx 0" "/proc/ppm/policy_status"
+    done
+    for dx in $(grep -E 'SYS_BOOST' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+        de_write "$dx 1" "/proc/ppm/policy_status"
+    done
+    de_write "1" "/proc/cpufreq/cpufreq_cci_mode" 2>/dev/null
+    de_write "3" "/proc/cpufreq/cpufreq_power_mode" 2>/dev/null
+    de_log "PPM: performance"
+}
+
+de_ppm_balance() {
+    [ ! -d /proc/ppm ] && return 0
+    [ -f /proc/ppm/policy_status ] || return 0
+    for idx in $(grep -E 'FORCE_LIMIT|PWR_THRO|THERMAL|USER_LIMIT' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+        de_write "$idx 1" "/proc/ppm/policy_status"
+    done
+    for dx in $(grep -E 'SYS_BOOST' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+        de_write "$dx 0" "/proc/ppm/policy_status"
+    done
+    de_write "0" "/proc/cpufreq/cpufreq_cci_mode" 2>/dev/null
+    de_write "1" "/proc/cpufreq/cpufreq_power_mode" 2>/dev/null
+    de_log "PPM: balance"
+}
+
+de_ppm_powersave() {
+    [ ! -d /proc/ppm ] && return 0
+    [ -f /proc/ppm/policy_status ] || return 0
+    for idx in $(grep -E 'FORCE_LIMIT|PWR_THRO|THERMAL|USER_LIMIT' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+        de_write "$idx 1" "/proc/ppm/policy_status"
+    done
+    for dx in $(grep -E 'SYS_BOOST' /proc/ppm/policy_status 2>/dev/null | awk -F'[][]' '{print $2}'); do
+        de_write "$dx 0" "/proc/ppm/policy_status"
+    done
+    de_log "PPM: powersave"
+}
+
+# MTK DVFSRC (DDR/UFS governor)
+de_dvfsrc_performance() {
+    chmod 644 /sys/class/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    echo "performance" > /sys/class/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    chmod 644 /sys/devices/platform/soc/1c00f000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    echo "performance" > /sys/devices/platform/soc/1c00f000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    de_write "0" "/sys/devices/platform/10012000.dvfsrc/helio-dvfsrc/dvfsrc_req_ddr_opp"
+    de_write "0" "/sys/kernel/helio-dvfsrc/dvfsrc_force_vcore_dvfs_opp"
+    de_log "DVFSRC: performance"
+}
+
+de_dvfsrc_balance() {
+    chmod 644 /sys/class/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    echo "userspace" > /sys/class/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    de_write "-1" "/sys/devices/platform/10012000.dvfsrc/helio-dvfsrc/dvfsrc_req_ddr_opp"
+    de_write "-1" "/sys/kernel/helio-dvfsrc/dvfsrc_force_vcore_dvfs_opp"
+    de_log "DVFSRC: balance"
+}
+
+de_dvfsrc_powersave() {
+    chmod 644 /sys/class/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    echo "powersave" > /sys/class/devfreq/mtk-dvfsrc-devfreq/governor 2>/dev/null
+    de_write "0" "/sys/devices/platform/10012000.dvfsrc/helio-dvfsrc/dvfsrc_req_ddr_opp"
+    de_write "0" "/sys/kernel/helio-dvfsrc/dvfsrc_force_vcore_dvfs_opp"
+    de_log "DVFSRC: powersave"
+}
+
+# Core control
+de_core_ctl_disable() {
+    for cpucore in /sys/devices/system/cpu/cpu*; do
+        de_write 0 "$cpucore/core_ctl/enable" 2>/dev/null
+        de_write 0 "$cpucore/core_ctl/core_ctl_boost" 2>/dev/null
+    done
+}
+
+# EAS
+de_eas_on()  { de_write "1" /sys/devices/system/cpu/eas/enable 2>/dev/null; }
+de_eas_off() { de_write "0" /sys/devices/system/cpu/eas/enable 2>/dev/null; }
+
+# Workqueue
+de_wq_performance() {
+    de_write "N" /sys/module/workqueue/parameters/power_efficient 2>/dev/null
+    de_write "N" /sys/module/workqueue/parameters/disable_numa 2>/dev/null
+}
+de_wq_balance() {
+    de_write "Y" /sys/module/workqueue/parameters/power_efficient 2>/dev/null
+    de_write "Y" /sys/module/workqueue/parameters/disable_numa 2>/dev/null
+}
+
+# Sched features
+de_sched_performance() {
+    [ -f /sys/kernel/debug/sched_features ] && {
+        de_write "NEXT_BUDDY"     /sys/kernel/debug/sched_features
+        de_write "NO_TTWU_QUEUE" /sys/kernel/debug/sched_features
+    }
+    echo 250000  > /proc/sys/kernel/sched_migration_cost_ns   2>/dev/null
+    echo 500000  > /proc/sys/kernel/sched_min_granularity_ns  2>/dev/null
+    echo 250000  > /proc/sys/kernel/sched_wakeup_granularity_ns 2>/dev/null
+}
+
+de_sched_balance() {
+    [ -f /sys/kernel/debug/sched_features ] && {
+        de_write "NEXT_BUDDY" /sys/kernel/debug/sched_features
+        de_write "TTWU_QUEUE" /sys/kernel/debug/sched_features
+    }
+    echo 500000  > /proc/sys/kernel/sched_migration_cost_ns   2>/dev/null
+    echo 1000000 > /proc/sys/kernel/sched_min_granularity_ns  2>/dev/null
+    echo 500000  > /proc/sys/kernel/sched_wakeup_granularity_ns 2>/dev/null
+}
+
+de_sched_powersave() {
+    [ -f /sys/kernel/debug/sched_features ] && {
+        de_write "NO_NEXT_BUDDY" /sys/kernel/debug/sched_features
+        de_write "NO_TTWU_QUEUE" /sys/kernel/debug/sched_features
+    }
+}
+
+# Schedutil / schedhorizon tuning
+de_tune_schedutil() {
+    local mode="${1:-balance}"
+    local up_rate down_rate
+
+    # Check if user has custom schedutil params saved from WebUI
+    local su_save="/sdcard/GovThermal/config/schedutil_params.txt"
+    if [ -f "$su_save" ]; then
+        local su_raw; su_raw=$(tr -d '[:space:]' < "$su_save" 2>/dev/null)
+        local su_up su_down
+        su_up=$(echo "$su_raw" | cut -d, -f1)
+        su_down=$(echo "$su_raw" | cut -d, -f2)
+        # Validate — must be numbers
+        if echo "$su_up" | grep -qE '^[0-9]+$' && echo "$su_down" | grep -qE '^[0-9]+$'; then
+            up_rate="$su_up"
+            down_rate="$su_down"
+            de_log "Schedutil: using user custom params up=$up_rate down=$down_rate"
+        fi
+    fi
+
+    # Fall back to profile defaults if no valid user params
+    if [ -z "$up_rate" ]; then
+        case "$mode" in
+            performance) up_rate=2000;  down_rate=5000  ;;
+            powersave)   up_rate=15000; down_rate=30000 ;;
+            *)           up_rate=7500;  down_rate=14000 ;;
+        esac
+    fi
+
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -f "$policy/scaling_available_frequencies" ] || continue
+        local avail selected num up_delay i
+        avail=$(cat "$policy/scaling_available_frequencies" 2>/dev/null || echo "")
+        selected=$(echo "$avail" | tr ' ' '\n' | sort -rn | head -n 6 | tr '\n' ' ' | sed 's/ $//')
+        num=$(echo "$selected" | wc -w)
+        up_delay=""; i=1
+        while [ "$i" -le "$num" ]; do
+            up_delay="$up_delay $((50 * i))"
+            i=$((i + 1))
+        done
+        up_delay="${up_delay# }"
+        local hz_path="$policy/schedhorizon"
+        local su_path="$policy/schedutil"
+        if [ -d "$hz_path" ]; then
+            de_write "$up_delay"  "$hz_path/up_delay"
+            de_write "$selected"  "$hz_path/efficient_freq"
+            de_write "$up_rate"   "$hz_path/up_rate_limit_us"
+            de_write "$down_rate" "$hz_path/down_rate_limit_us"
+        fi
+        if [ -d "$su_path" ]; then
+            de_write "$up_rate"   "$su_path/up_rate_limit_us"
+            de_write "$down_rate" "$su_path/down_rate_limit_us"
+        fi
+    done
+    de_log "Schedutil tuning: $mode (up=$up_rate down=$down_rate)"
+}
+
+# Schedtune
+de_schedtune_performance() {
+    for path in /dev/stune/*; do
+        de_write 30 "$path/schedtune.boost"              2>/dev/null
+        de_write  1 "$path/schedtune.sched_boost_enabled" 2>/dev/null
+        de_write  0 "$path/schedtune.prefer_idle"         2>/dev/null
+        de_write  0 "$path/schedtune.colocate"            2>/dev/null
+    done
+    de_write 50 "/dev/stune/top-app/schedtune.boost" 2>/dev/null
+    de_log "Schedtune: performance"
+}
+
+de_schedtune_balance() {
+    for path in /dev/stune/*; do
+        de_write 0 "$path/schedtune.boost"               2>/dev/null
+        de_write 0 "$path/schedtune.sched_boost_enabled"  2>/dev/null
+        de_write 0 "$path/schedtune.prefer_idle"          2>/dev/null
+        de_write 0 "$path/schedtune.colocate"             2>/dev/null
+    done
+    de_write 10 "/dev/stune/top-app/schedtune.boost" 2>/dev/null
+    de_log "Schedtune: balance"
+}
+
+# VM tuning
+de_vm_performance() {
+    echo 40  > /proc/sys/vm/vfs_cache_pressure  2>/dev/null
+    echo 20  > /proc/sys/vm/dirty_ratio         2>/dev/null
+    echo 8   > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo 10  > /proc/sys/vm/swappiness         2>/dev/null
+    echo 200 > /proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+}
+
+de_vm_balance() {
+    echo 100  > /proc/sys/vm/vfs_cache_pressure  2>/dev/null
+    echo 20   > /proc/sys/vm/dirty_ratio         2>/dev/null
+    echo 10   > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo 60   > /proc/sys/vm/swappiness         2>/dev/null
+    echo 3000 > /proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+}
+
+de_vm_powersave() {
+    echo 120  > /proc/sys/vm/vfs_cache_pressure  2>/dev/null
+    echo 30   > /proc/sys/vm/dirty_ratio         2>/dev/null
+    echo 15   > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo 100  > /proc/sys/vm/swappiness         2>/dev/null
+    echo 1500 > /proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+}
+
+# Battery saver
+de_battery_saver_enable() {
+    [ -f /sys/module/battery_saver/parameters/enabled ] || return 0
+    if grep -qo '[0-9]\+' /sys/module/battery_saver/parameters/enabled 2>/dev/null; then
+        de_write 1 /sys/module/battery_saver/parameters/enabled
+    else
+        de_write Y /sys/module/battery_saver/parameters/enabled
+    fi
+}
+
+de_battery_saver_disable() {
+    [ -f /sys/module/battery_saver/parameters/enabled ] || return 0
+    if grep -qo '[0-9]\+' /sys/module/battery_saver/parameters/enabled 2>/dev/null; then
+        de_write 0 /sys/module/battery_saver/parameters/enabled
+    else
+        de_write N /sys/module/battery_saver/parameters/enabled
+    fi
+}
+
+# =============================================================================
+#  PERFORMANCE PROFILE
+# =============================================================================
+de_performance_cpu() {
+    de_log "Profile: PERFORMANCE"
+    mkdir -p "$DE_CFG" 2>/dev/null
+
+    local gov; gov=$(de_read_gov "performance")
+    de_set_governor "$gov"
+
+    local freq_scale
+    freq_scale=$(tr -d '[:space:]' < "/sdcard/GovThermal/freq_scale.txt" 2>/dev/null)
+    if [ -n "$freq_scale" ] && [ "$freq_scale" -ge 30 ] 2>/dev/null && [ "$freq_scale" -le 100 ] 2>/dev/null; then
+        de_apply_freq "$freq_scale" 0
+    else
+        de_apply_freq 100 0
+    fi
+
+    de_ppm_performance
+    de_dvfsrc_performance
+    de_gpu_performance
+    de_fpsgo_on
+    de_eas_off
+    de_core_ctl_disable
+    de_wq_performance
+    de_vm_performance
+    de_sched_performance
+    de_schedtune_performance
+    de_battery_saver_disable
+
+    # EEM: 0 offset = stock voltage (max stability at full freq)
+    # Only apply if user hasn't set a custom offset via WebUI
+    local user_eem
+    user_eem=$(tr -d '[:space:]' < "/sdcard/DAVION_ENGINE/eem_voltage_offset.txt" 2>/dev/null)
+    if [ -z "$user_eem" ]; then
+        for p in /proc/eem/EEM_DET_B/eem_offset /proc/eem/EEM_DET_BL/eem_offset \
+                 /proc/eem/EEM_DET_L/eem_offset /proc/eem/EEM_DET_CCI/eem_offset \
+                 /proc/eemg/EEMG_DET_GPU/eemg_offset; do
+            [ -f "$p" ] && echo "0" > "$p" 2>/dev/null
+        done
+        de_log "EEM: 0 (stock voltage, performance)"
+    fi
+
+    de_write 1 /proc/sys/kernel/sched_energy_aware 2>/dev/null
+    de_write 0 /proc/sys/kernel/split_lock_mitigate 2>/dev/null
+
+    echo "performance" > "${DE_CFG}/active_profile" 2>/dev/null
+    de_log "PERFORMANCE applied (gov=${gov})"
+}
+
+# =============================================================================
+#  BALANCED PROFILE
+# =============================================================================
+de_balanced_cpu() {
+    de_log "Profile: BALANCED"
+    mkdir -p "$DE_CFG" 2>/dev/null
+
+    local gov; gov=$(de_read_gov "balanced")
+    de_set_governor "$gov"
+
+    local freq_scale
+    freq_scale=$(tr -d '[:space:]' < "/sdcard/GovThermal/freq_scale.txt" 2>/dev/null)
+    if [ -n "$freq_scale" ] && [ "$freq_scale" -ge 30 ] 2>/dev/null && [ "$freq_scale" -le 100 ] 2>/dev/null; then
+        de_apply_freq "$freq_scale" 0
+    else
+        de_apply_freq 100 0
+    fi
+
+    de_ppm_balance
+    de_dvfsrc_balance
+    de_gpu_balance
+    de_eas_on
+    de_wq_balance
+    de_vm_balance
+    de_sched_balance
+    de_schedtune_balance
+    de_battery_saver_disable
+
+    # EEM: mild undervolt for balanced heat/perf
+    # -6 = ~6 steps below stock voltage, safe and reduces heat noticeably
+    local user_eem
+    user_eem=$(tr -d '[:space:]' < "/sdcard/DAVION_ENGINE/eem_voltage_offset.txt" 2>/dev/null)
+    if [ -z "$user_eem" ]; then
+        for p in /proc/eem/EEM_DET_B/eem_offset /proc/eem/EEM_DET_BL/eem_offset \
+                 /proc/eem/EEM_DET_L/eem_offset; do
+            [ -f "$p" ] && echo "-6" > "$p" 2>/dev/null
+        done
+        [ -f /proc/eem/EEM_DET_CCI/eem_offset ]      && echo "-4" > /proc/eem/EEM_DET_CCI/eem_offset 2>/dev/null
+        [ -f /proc/eemg/EEMG_DET_GPU/eemg_offset ]   && echo "-4" > /proc/eemg/EEMG_DET_GPU/eemg_offset 2>/dev/null
+        de_log "EEM: -6/-4 (mild undervolt, balanced)"
+    fi
+
+    de_write 1 /proc/sys/kernel/sched_energy_aware 2>/dev/null
+    de_write 1 /proc/sys/kernel/split_lock_mitigate 2>/dev/null
+
+    echo "balanced" > "${DE_CFG}/active_profile" 2>/dev/null
+    de_log "BALANCED applied (gov=${gov})"
+}
+
+# =============================================================================
+#  POWERSAVE PROFILE
+# =============================================================================
+de_powersave_cpu() {
+    de_log "Profile: POWERSAVE"
+    mkdir -p "$DE_CFG" 2>/dev/null
+
+    local gov; gov=$(de_read_gov "powersave")
+    de_set_governor "$gov"
+
+    local freq_scale
+    freq_scale=$(tr -d '[:space:]' < "/sdcard/GovThermal/freq_scale.txt" 2>/dev/null)
+    if [ -n "$freq_scale" ] && [ "$freq_scale" -ge 30 ] 2>/dev/null && [ "$freq_scale" -le 100 ] 2>/dev/null; then
+        de_apply_freq "$freq_scale" 0
+    else
+        de_apply_freq 60 0
+    fi
+
+    de_ppm_powersave
+    de_dvfsrc_powersave
+    de_gpu_powersave
+    de_fpsgo_off
+    de_wq_balance
+    de_vm_powersave
+    de_sched_powersave
+    de_battery_saver_enable
+
+    # EEM: aggressive undervolt for max battery savings + less heat
+    # -12 Big/Little (proven safe on D8050, D900 similar silicon)
+    # -8 CCI interconnect (conservative since it's shared fabric)
+    local user_eem
+    user_eem=$(tr -d '[:space:]' < "/sdcard/DAVION_ENGINE/eem_voltage_offset.txt" 2>/dev/null)
+    if [ -z "$user_eem" ]; then
+        for p in /proc/eem/EEM_DET_B/eem_offset /proc/eem/EEM_DET_BL/eem_offset \
+                 /proc/eem/EEM_DET_L/eem_offset; do
+            [ -f "$p" ] && echo "-12" > "$p" 2>/dev/null
+        done
+        [ -f /proc/eem/EEM_DET_CCI/eem_offset ]      && echo "-8"  > /proc/eem/EEM_DET_CCI/eem_offset 2>/dev/null
+        [ -f /proc/eemg/EEMG_DET_GPU/eemg_offset ]   && echo "-8"  > /proc/eemg/EEMG_DET_GPU/eemg_offset 2>/dev/null
+        [ -f /proc/eemg/EEMG_DET_GPU_HI/eemg_offset ] && echo "-8" > /proc/eemg/EEMG_DET_GPU_HI/eemg_offset 2>/dev/null
+        de_log "EEM: -12/-8 (aggressive undervolt, powersave)"
+    fi
+
+    de_write 0 /proc/sys/kernel/sched_energy_aware 2>/dev/null
+
+    echo "powersave" > "${DE_CFG}/active_profile" 2>/dev/null
+    de_log "POWERSAVE applied (gov=${gov})"
+}
+
+# =============================================================================
+#  ENTRY POINT
+# =============================================================================
+case "$1" in
+    performance) de_performance_cpu ;;
+    balanced)    de_balanced_cpu    ;;
+    powersave)   de_powersave_cpu   ;;
+    *)           [ -n "$1" ] || de_balanced_cpu ;;
+esac
